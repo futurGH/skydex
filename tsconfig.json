@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "esnext",
+    "lib": ["esnext"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+
+    "skipLibCheck": true,
+    "incremental": true,
+    "newLine": "lf",
+
+    "forceConsistentCasingInFileNames": true,
+    "useDefineForClassFields": true,
+
+    "noUnusedParameters": true,
+    "noImplicitOverride": true,
+    "exactOptionalPropertyTypes": true,
+    "strict": true,
+  },
+  "include": [
+    "src"
+  ],
+  "exclude": ["node_modules"]
+}
