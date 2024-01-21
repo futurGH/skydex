@@ -1,25 +1,33 @@
 {
-  "compilerOptions": {
-    "target": "esnext",
-    "lib": ["esnext"],
-    "module": "esnext",
-    "moduleResolution": "bundler",
-    "allowSyntheticDefaultImports": true,
+	"compilerOptions": {
+		"target": "esnext",
+		"lib": ["esnext"],
+		"module": "nodenext",
+		"moduleResolution": "bundler",
 
-    "skipLibCheck": true,
-    "incremental": true,
-    "newLine": "lf",
+		"allowImportingTsExtensions": true,
+		"allowSyntheticDefaultImports": true,
+		"esModuleInterop": true,
 
-    "forceConsistentCasingInFileNames": true,
-    "useDefineForClassFields": true,
+		"skipLibCheck": true,
+		"incremental": true,
+		"newLine": "lf",
 
-    "noUnusedParameters": true,
-    "noImplicitOverride": true,
-    "exactOptionalPropertyTypes": true,
-    "strict": true,
-  },
-  "include": [
-    "src"
-  ],
-  "exclude": ["node_modules"]
+		"forceConsistentCasingInFileNames": true,
+		"useDefineForClassFields": true,
+
+		"noUnusedParameters": true,
+		"noImplicitOverride": true,
+		"exactOptionalPropertyTypes": true,
+		"strict": true,
+
+		"types": ["bun-types"],
+
+		"outDir": "dist",
+		"noEmit": true
+	},
+	"include": [
+		"src"
+	],
+	"exclude": ["node_modules"]
 }

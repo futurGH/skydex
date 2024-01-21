@@ -5,15 +5,15 @@
   "private": true,
   "license": "MPL-2.0",
   "devDependencies": {
-    "@atproto/repo": "^0.3.6",
-    "@atproto/xrpc-server": "^0.4.2",
     "@edgedb/generate": "^0.4.1",
-    "bun-types": "latest"
-  },
-  "peerDependencies": {
-    "typescript": "^5.0.0"
+    "bun-types": "latest",
+    "dprint": "^0.43.2",
+    "tsx": "^4.6.2",
+    "typescript": "^5.3.3"
   },
   "dependencies": {
+    "@atproto/api": "^0.7.4",
+    "@atproto/repo": "^0.3.6",
     "edgedb": "^1.4.1"
   }
 }
