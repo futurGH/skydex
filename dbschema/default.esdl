@@ -19,8 +19,9 @@ module default {
         required multi reposts: User;
         multi replies := .<parent;
 
-        required multi langs: str;
+        multi langs: str;
         multi tags: str;
+        multi labels: str;
     }
 
     type Embed {

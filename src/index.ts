@@ -1,33 +1,175 @@
-import { AtpBaseClient } from "@atproto/api";
+import { AtpAgent, AtpBaseClient, AtUri } from "@atproto/api";
 import { cborToLexRecord, readCar } from "@atproto/repo";
 import { Frame } from "@atproto/xrpc-server";
+import { createClient } from "edgedb";
+import NodeCache from "node-cache";
 import * as util from "util";
 import { type RawData, WebSocket } from "ws";
+import e from "../dbschema/edgeql-js";
+import { helper, Post, User } from "../dbschema/interfaces.ts";
 import * as AppBskyActorProfile from "../lexicons/types/app/bsky/actor/profile.ts";
+import * as AppBskyEmbedExternal from "../lexicons/types/app/bsky/embed/external.ts";
+import * as AppBskyEmbedImages from "../lexicons/types/app/bsky/embed/images.ts";
+import * as AppBskyEmbedRecord from "../lexicons/types/app/bsky/embed/record.ts";
+import * as AppBskyEmbedRecordWithMedia from "../lexicons/types/app/bsky/embed/recordWithMedia.ts";
 import * as AppBskyFeedLike from "../lexicons/types/app/bsky/feed/like.ts";
 import * as AppBskyFeedPost from "../lexicons/types/app/bsky/feed/post.ts";
 import * as AppBskyGraphFollow from "../lexicons/types/app/bsky/graph/follow.ts";
+import * as ComAtprotoLabelDefs from "../lexicons/types/com/atproto/label/defs.ts";
 import * as ComAtprotoSyncSubscribeRepos from "../lexicons/types/com/atproto/sync/subscribeRepos.ts";
+import { filterExists } from "./util.ts";
 
 type HandleCreateParams<T> = { record: T; cid: string; repo: string; uri: string };
 type HandleDeleteParams = { repo: string; uri: string };
 
 const atpClient = new AtpBaseClient();
+const atpAgent = new AtpAgent({ service: "https://bsky.social" });
+const dbClient = createClient();
+const cache = new NodeCache({ stdTTL: 10 * 60, checkperiod: 60 });
+async function insertPostRecord({ record, repo, uri, cid }: HandleCreateParams<AppBskyFeedPost.Record>) {
+	const author = await resolveUser(repo);
+	if (!author) return null;
 
-function handlePostCreate({ record, cid, repo, uri }: HandleCreateParams<AppBskyFeedPost.Record>) {
-	// console.log("post", record);
+	const labels = ComAtprotoLabelDefs.isSelfLabels(record.labels)
+		? record.labels.values.map(({ val }) => val)
+		: [];
+
+	let altText: string | undefined;
+	let embed: AppBskyEmbedExternal.External | undefined;
+	let quotedUri: string | undefined;
+
+	if (AppBskyEmbedImages.isMain(record.embed)) {
+		altText = record.embed.images.map((i) => i.alt).join("\n");
+	} else if (AppBskyEmbedExternal.isMain(record.embed)) {
+		embed = record.embed.external;
+	} else if (AppBskyEmbedRecord.isMain(record.embed)) {
+		quotedUri = record.embed.record.uri;
+	} else if (AppBskyEmbedRecordWithMedia.isMain(record.embed)) {
+		quotedUri = record.embed.record.record.uri;
+	}
+
+	const parentUri = record.reply?.parent?.uri;
+	const rootUri = record.reply?.root?.uri;
+	let parent = parentUri ? await resolvePost({ uri: parentUri }) : undefined,
+		root = rootUri ? await resolvePost({ uri: rootUri }) : undefined,
+		quoted = quotedUri ? await resolvePost({ uri: quotedUri }) : undefined;
+
+	// Only fetch parent/root/quoted posts if we don't have one of them cached or in db
+	if ((parentUri && !parent) || (rootUri && !root) || (quotedUri && !quoted)) {
+		const posts = await atpAgent.api.app.bsky.feed.getPosts({
+			uris: filterExists([parentUri, rootUri, quotedUri]),
+		});
+		if (!posts?.success || !posts?.data?.posts?.length) return null;
+		for (const post of posts.data.posts) {
+			if (!AppBskyFeedPost.isRecord(post.record)) continue;
+			const insertedPost = await insertPostRecord({
+				record: post.record,
+				repo: post.author.did,
+				uri: post.uri,
+				cid: post.cid,
+			});
+			if (!insertedPost) continue;
+			if (post.uri === parentUri) parent = insertedPost;
+			else if (post.uri === rootUri) root = insertedPost;
+			else if (post.uri === quotedUri) quoted = insertedPost;
+		}
+	}
+
+	const insert = e.insert(e.Post, {
+		uri,
+		cid,
+		createdAt: e.datetime(new Date(record.createdAt)),
+
+		author: e.select(e.User, () => ({ filter_single: { id: repo } })),
+		text: record.text,
+		embed: embed
+			? e.insert(e.Embed, { title: embed?.title, description: embed?.description, uri: embed?.uri })
+			: undefined,
+		altText,
+
+		parent: parent?.uri ? e.select(e.Post, () => ({ filter_single: { uri: parent!.uri } })) : undefined,
+		root: root?.uri ? e.select(e.Post, () => ({ filter_single: { uri: root!.uri } })) : undefined,
+		quoted: quoted?.uri ? e.select(e.Post, () => ({ filter_single: { uri: quoted!.uri } })) : undefined,
+
+		likes: e.cast(e.User, e.set()),
+		reposts: e.cast(e.User, e.set()),
+
+		langs: record.langs,
+		tags: record.tags,
+		labels,
+	}).unlessConflict((post) => ({
+		on: post.uri,
+		else: e.select(e.Post, () => ({ ...e.Post["*"], filter_single: { uri } })),
+	}));
+
+	const inserted = await e.select(insert, (post) => post["*"]).run(dbClient);
+	if (inserted) cache.set(`app.bsky.feed.post:${uri}`, inserted);
+	return inserted;
+}
+
+async function resolveUser(did: string): Promise<helper.Props<User> | null> {
+	const cacheKey = `app.bsky.actor:${did}`;
+	const cached = cache.get<User>(cacheKey);
+	if (cached) return cached;
+
+	const user = await e.select(e.User, () => ({ ...e.User["*"], filter_single: { did } })).run(dbClient);
+	if (user) {
+		cache.set(cacheKey, user);
+		return user;
+	}
+
+	const profile = await atpAgent.api.app.bsky.actor.getProfile({ actor: did });
+	if (!profile?.success) return null;
+	const { displayName = profile.data.handle, handle, description: bio = "" } = profile.data;
+
+	const insert = e.insert(e.User, { did, displayName, handle, bio, followers: e.cast(e.User, e.set()) })
+		.unlessConflict((user) => ({
+			on: user.did,
+			else: e.select(e.User, () => ({ ...e.User["*"], filter_single: { did } })),
+		}));
+	const inserted = await e.select(insert, (user) => user["*"]).run(dbClient);
+
+	cache.set(cacheKey, inserted);
+	return inserted;
+}
+
+async function resolvePost(
+	{ uri, repo, cid, record }: { uri: string; repo?: string; cid?: string; record?: AppBskyFeedPost.Record },
+): Promise<helper.Props<Post> | null> {
+	const cacheKey = `app.bsky.feed.post:${uri}`;
+	const cached = cache.get<Post>(cacheKey);
+	if (cached) return cached;
+
+	const postFromDb = await e.select(e.Post, () => ({ ...e.Post["*"], filter_single: { uri } })).run(
+		dbClient,
+	);
+	if (postFromDb) {
+		cache.set(cacheKey, postFromDb);
+		return postFromDb;
+	}
+
+	// Past this point we need the repo did to resolve the post
+	if (!repo) return null;
+
+	if (!cid || !record) {
+		const { rkey } = new AtUri(uri);
+		const post = await atpAgent.api.app.bsky.feed.post.get({ repo, rkey });
+		if (!post?.value) return null;
+		cid ||= post.cid;
+		record ||= post.value;
+	}
+
+	const inserted = await insertPostRecord({ record, repo, uri, cid });
+	cache.set(cacheKey, inserted);
+	return inserted;
 }
 function handleLikeCreate({ record, cid, repo, uri }: HandleCreateParams<AppBskyFeedLike.Record>) {
 	// console.log("like", record);
 }
-function handleFollowCreate(
-	{ record, cid, repo, uri }: HandleCreateParams<AppBskyGraphFollow.Record>,
-) {
+function handleFollowCreate({ record, cid, repo, uri }: HandleCreateParams<AppBskyGraphFollow.Record>) {
 	// console.log("follow.create", record);
 }
-function handleActorCreate(
-	{ record, cid, repo, uri }: HandleCreateParams<AppBskyActorProfile.Record>,
-) {
+function handleActorCreate({ record, cid, repo, uri }: HandleCreateParams<AppBskyActorProfile.Record>) {
 	// console.log("actor.create", record);
 }
 function handlePostDelete({ repo, uri }: HandleDeleteParams) {
@@ -66,7 +208,7 @@ async function handleMessage(data: RawData) {
 			const record = cborToLexRecord(rec);
 
 			if (AppBskyFeedPost.isRecord(record)) {
-				handlePostCreate({ record, cid: op.cid.toString(), repo: message.repo, uri });
+				await insertPostRecord({ record, cid: op.cid.toString(), repo: message.repo, uri });
 			} else if (AppBskyFeedLike.isRecord(record)) {
 				handleLikeCreate({ record, cid: op.cid.toString(), repo: message.repo, uri });
 			} else if (AppBskyGraphFollow.isRecord(record)) {
