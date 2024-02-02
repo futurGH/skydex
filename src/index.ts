@@ -222,8 +222,32 @@ async function handleLikeCreate(
 		);
 	}
 }
-function handleFollowCreate({ record, cid, repo, uri }: HandleCreateParams<AppBskyGraphFollow.Record>) {
-	// console.log("follow.create", record);
+
+async function handleFollowCreate(
+	{ record, repo, uri }: Omit<HandleCreateParams<AppBskyGraphFollow.Record>, "cid">,
+) {
+	const subjectActor = await resolveUser(record.subject);
+	if (!subjectActor) {
+		throw new Error(
+			`👤 Failed to resolve follow subject\n  Subject DID: ${record.subject}\n  Source DID: ${repo}`,
+		);
+	}
+
+	const actor = await resolveUser(repo);
+	if (!actor) throw new Error(`👤 Failed to resolve follow author\n  DID: ${repo}`);
+
+	const inserted = await e.update(
+		e.User,
+		() => ({
+			filter_single: { did: subjectActor },
+			set: { followers: { "+=": e.select(e.User, () => ({ filter_single: { did: repo } })) } },
+		}),
+	).run(dbClient);
+	if (!inserted) {
+		throw new Error(
+			`👥 Failed to insert follow record\n  Follow URI: ${uri}\n  Subject DID: ${record.subject}`,
+		);
+	}
 }
 function handleActorCreate({ record, cid, repo, uri }: HandleCreateParams<AppBskyActorProfile.Record>) {
 	// console.log("actor.create", record);
@@ -269,7 +293,7 @@ async function handleMessage(data: RawData) {
 			} else if (AppBskyFeedLike.isRecord(record)) {
 				await handleLikeCreate({ record, repo: message.repo, uri });
 			} else if (AppBskyGraphFollow.isRecord(record)) {
-				handleFollowCreate({ record, cid: op.cid.toString(), repo: message.repo, uri });
+				await handleFollowCreate({ record, cid: op.cid.toString(), repo: message.repo, uri });
 			} else if (AppBskyActorProfile.isRecord(record)) {
 				handleActorCreate({ record, cid: op.cid.toString(), repo: message.repo, uri });
 			}
