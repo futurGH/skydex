@@ -16,7 +16,8 @@
     "@atproto/api": "^0.7.4",
     "@atproto/repo": "^0.3.6",
     "@atproto/xrpc-server": "^0.4.2",
+    "bottleneck": "^2.19.5",
     "edgedb": "^1.4.1",
-    "node-cache": "^5.1.2"
+    "keyv": "^4.5.4"
   }
 }
