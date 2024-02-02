@@ -1,6 +1,7 @@
 import { AtpAgent, AtpBaseClient, AtUri } from "@atproto/api";
 import { cborToLexRecord, readCar } from "@atproto/repo";
 import { Frame } from "@atproto/xrpc-server";
+import Bottleneck from "bottleneck";
 import { createClient } from "edgedb";
 import * as util from "util";
 import { type RawData, WebSocket } from "ws";
@@ -25,6 +26,51 @@ const atpClient = new AtpBaseClient();
 const atpAgent = new AtpAgent({ service: "https://bsky.social" });
 const dbClient = createClient();
 
+// Rate limit is 3000/5min (10/s); we use slightly conservative numbers to be safe
+const rateLimiter = new Bottleneck({
+	minTime: 110,
+	reservoir: 2800,
+	reservoirRefreshAmount: 2800,
+	reservoirRefreshInterval: 5 * 60 * 1000,
+});
+
+const backoffs = new Map<string, number>();
+rateLimiter.on("failed", (error, jobInfo) => {
+	// retryCount=0 → 250ms
+	// retryCount=1 → 707ms
+	// retryCount=2 → 3 674ms
+	// retryCount=3 → 29 393ms
+	// retryCount=4 → 328 633ms
+	// retryCount>4 → give up
+	let backoff = backoffs.get(jobInfo.options.id) ?? (backoffs.set(jobInfo.options.id, 250), 250);
+	if (error?.statusCode === 429) {
+		// Wait until rate limit resets if we have 0 requests remaining
+		if (error?.headers?.["ratelimit-remaining"] && error?.headers?.["ratelimit-reset"]) {
+			if (error.headers["ratelimit-remaining"] === "0") {
+				const reset = parseInt(error.headers["ratelimit-reset"]) * 1000;
+				const wait = reset - Date.now();
+				backoffs.set(jobInfo.options.id, wait);
+				return wait;
+			}
+		}
+		if (jobInfo.retryCount < 5) {
+			backoffs.set(jobInfo.options.id, backoff = backoff * (jobInfo.retryCount + 1) ** 1.5);
+			return backoff;
+		} else {
+			backoffs.delete(jobInfo.options.id);
+			console.error(
+				`🚫 Giving up after 5 retries\n  ID: ${jobInfo.options.id}\n  Error: ${util.inspect(error)}`,
+			);
+			return null;
+		}
+	} else {
+		console.error(
+			`❗ Skipping invalid request\n  ID: ${jobInfo.options.id}\n  Error: ${util.inspect(error)}`,
+		);
+		return null;
+	}
+});
+
 async function resolveUser(did: string): Promise<string | null> {
 	const cached = await userDidCache.get(did);
 	if (cached) return did;
@@ -35,7 +81,10 @@ async function resolveUser(did: string): Promise<string | null> {
 		return did;
 	}
 
-	const profile = await atpAgent.api.app.bsky.actor.getProfile({ actor: did });
+	const profile = await rateLimiter.schedule(
+		{ id: `app.bsky.actor.getProfile::${did}` },
+		() => atpAgent.api.app.bsky.actor.getProfile({ actor: did }),
+	);
 	if (!profile?.success) return null;
 	const { displayName = profile.data.handle, handle, description: bio = "" } = profile.data;
 
@@ -68,10 +117,10 @@ async function resolvePost(uri: string): Promise<string | null> {
 	}
 
 	const { host: repo, rkey } = new AtUri(uri);
-	const { cid, value: record } = await atpAgent.api.app.bsky.feed.post.get({ repo, rkey }).catch(() => ({
-		cid: null,
-		value: null,
-	}));
+	const { cid, value: record } = await rateLimiter.schedule(
+		{ id: `app.bsky.feed.post.get::${uri}` },
+		() => atpAgent.api.app.bsky.feed.post.get({ repo, rkey })
+	).catch(() => ({ cid: null, value: null });
 	if (!record) return null;
 
 	const inserted = await insertPostRecord({ record, repo, uri, cid }).catch(() => null);
@@ -146,6 +195,7 @@ async function insertPostRecord({ record, repo, uri, cid }: HandleCreateParams<A
 	await postUriCache.set(uri, true);
 	return inserted;
 }
+
 function handleLikeCreate({ record, cid, repo, uri }: HandleCreateParams<AppBskyFeedLike.Record>) {
 	// console.log("like", record);
 }
