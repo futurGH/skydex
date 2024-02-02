@@ -15,7 +15,9 @@ module default {
         root: Post;
         quoted: Post;
 
-        required multi likes: User;
+        required multi likes: User {
+            rkey: str;
+        };
         required multi reposts: User;
         multi replies := .<parent;
 
