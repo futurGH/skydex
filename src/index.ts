@@ -119,8 +119,8 @@ async function resolvePost(uri: string): Promise<string | null> {
 	const { host: repo, rkey } = new AtUri(uri);
 	const { cid, value: record } = await rateLimiter.schedule(
 		{ id: `app.bsky.feed.post.get::${uri}` },
-		() => atpAgent.api.app.bsky.feed.post.get({ repo, rkey })
-	).catch(() => ({ cid: null, value: null });
+		() => atpAgent.api.app.bsky.feed.post.get({ repo, rkey }),
+	).catch(() => ({ cid: null, value: null }));
 	if (!record) return null;
 
 	const inserted = await insertPostRecord({ record, repo, uri, cid }).catch(() => null);
@@ -196,8 +196,31 @@ async function insertPostRecord({ record, repo, uri, cid }: HandleCreateParams<A
 	return inserted;
 }
 
-function handleLikeCreate({ record, cid, repo, uri }: HandleCreateParams<AppBskyFeedLike.Record>) {
-	// console.log("like", record);
+async function handleLikeCreate(
+	{ record, repo, uri }: Omit<HandleCreateParams<AppBskyFeedLike.Record>, "cid">,
+) {
+	const subjectPost = await resolvePost(record.subject.uri);
+	if (!subjectPost) {
+		throw new Error(
+			`👍 Failed to resolve like subject post\n  Post URI: ${record.subject.uri}\n  Like URI: ${uri}`,
+		);
+	}
+
+	const actor = await resolveUser(repo);
+	if (!actor) throw new Error(`👤 Failed to resolve like author\n  Like URI: ${uri}`);
+
+	const inserted = await e.update(
+		e.Post,
+		() => ({
+			filter_single: { uri: subjectPost },
+			set: { likes: { "+=": e.select(e.User, () => ({ filter_single: { did: repo } })) } },
+		}),
+	).run(dbClient);
+	if (!inserted) {
+		throw new Error(
+			`👍 Failed to insert like record\n  Like URI: ${uri}\n  Post URI: ${record.subject.uri}`,
+		);
+	}
 }
 function handleFollowCreate({ record, cid, repo, uri }: HandleCreateParams<AppBskyGraphFollow.Record>) {
 	// console.log("follow.create", record);
@@ -244,7 +267,7 @@ async function handleMessage(data: RawData) {
 			if (AppBskyFeedPost.isRecord(record)) {
 				await insertPostRecord({ record, cid: op.cid.toString(), repo: message.repo, uri });
 			} else if (AppBskyFeedLike.isRecord(record)) {
-				handleLikeCreate({ record, cid: op.cid.toString(), repo: message.repo, uri });
+				await handleLikeCreate({ record, repo: message.repo, uri });
 			} else if (AppBskyGraphFollow.isRecord(record)) {
 				handleFollowCreate({ record, cid: op.cid.toString(), repo: message.repo, uri });
 			} else if (AppBskyActorProfile.isRecord(record)) {
