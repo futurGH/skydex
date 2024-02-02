@@ -249,9 +249,15 @@ async function handleFollowCreate(
 		);
 	}
 }
-function handleActorCreate({ record, cid, repo, uri }: HandleCreateParams<AppBskyActorProfile.Record>) {
-	// console.log("actor.create", record);
+
+async function handleActorCreate({ repo }: { repo: string }) {
+	// We can't insert the user directly based on the firehose record because it's missing `handle`
+	const inserted = await resolveUser(repo);
+	if (!inserted) {
+		throw new Error(`👤 Failed to insert new actor record\n  DID: ${repo}`);
+	}
 }
+
 function handlePostDelete({ repo, uri }: HandleDeleteParams) {
 	// console.log("post.delete", uri);
 }
@@ -293,9 +299,9 @@ async function handleMessage(data: RawData) {
 			} else if (AppBskyFeedLike.isRecord(record)) {
 				await handleLikeCreate({ record, repo: message.repo, uri });
 			} else if (AppBskyGraphFollow.isRecord(record)) {
-				await handleFollowCreate({ record, cid: op.cid.toString(), repo: message.repo, uri });
+				await handleFollowCreate({ record, repo: message.repo, uri });
 			} else if (AppBskyActorProfile.isRecord(record)) {
-				handleActorCreate({ record, cid: op.cid.toString(), repo: message.repo, uri });
+				await handleActorCreate({ repo: message.repo });
 			}
 		} else if (op.action === "delete") {
 			if (op.path.startsWith("app.bsky.feed.post")) {
