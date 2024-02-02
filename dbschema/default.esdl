@@ -6,19 +6,23 @@ module default {
         required createdAt: datetime;
         index on (.createdAt);
 
-        required author: User;
+        required author: User { on target delete delete source; };
         required text: str;
         embed: Embed;
         altText: str;
 
-        parent: Post;
-        root: Post;
-        quoted: Post;
+        parent: Post { on target delete allow; };
+        root: Post { on target delete allow; };
+        quoted: Post { on target delete allow; };
 
         required multi likes: User {
             rkey: str;
+            on target delete allow;
         };
-        required multi reposts: User;
+        required multi reposts: User {
+            rkey: str;
+            on target delete allow;
+        };
         multi replies := .<parent;
 
         multi langs: str;
@@ -41,7 +45,9 @@ module default {
         required displayName: str;
         required bio: str;
 
-        required multi followers: User;
+        required multi followers: User {
+            on target delete allow;
+        };
         multi following := .<followers;
     }
 }
