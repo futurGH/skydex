@@ -46,6 +46,7 @@ module default {
         required bio: str;
 
         required multi followers: User {
+            rkey: str;
             on target delete allow;
         };
         multi following := .<followers;

@@ -258,14 +258,43 @@ async function handleActorCreate({ repo }: { repo: string }) {
 	}
 }
 
-function handlePostDelete({ repo, uri }: HandleDeleteParams) {
-	// console.log("post.delete", uri);
+async function handlePostDelete({ uri }: { uri: string }) {
+	const removed = await e.delete(e.Post, () => ({ filter_single: { uri } })).run(dbClient);
+	if (!removed) {
+		throw new Error(`📜 Failed to delete post record\n  URI: ${uri}`);
+	}
 }
-function handleLikeDelete({ repo, uri }: HandleDeleteParams) {
-	// console.log("like.delete", uri);
+async function handleLikeDelete({ repo, uri }: HandleDeleteParams) {
+	const rkey = uri.split("/").pop();
+	if (!rkey) throw new Error(`👍 Invalid AT URI in like delete\n  URI: ${uri}`);
+	const updated = await e.update(
+		e.Post,
+		(post) => ({
+			filter_single: e.op(e.op(post.likes.did, "=", repo), "and", e.op(post.likes["@rkey"], "=", rkey)),
+			set: { likes: { "-=": e.select(e.User, () => ({ filter_single: { did: repo } })) } },
+		}),
+	).run(dbClient);
+	if (!updated) {
+		throw new Error(`👍 Failed to delete like record\n  URI: ${uri}`);
+	}
 }
-function handleFollowDelete({ repo, uri }: HandleDeleteParams) {
-	// console.log("follow.delete", uri);
+async function handleFollowDelete({ repo, uri }: HandleDeleteParams) {
+	const rkey = uri.split("/").pop();
+	if (!rkey) throw new Error(`👥 Invalid AT URI in follow delete\n  URI: ${uri}`);
+	const updated = await e.update(
+		e.User,
+		(user) => ({
+			filter_single: e.op(
+				e.op(user.followers.did, "=", repo),
+				"and",
+				e.op(user.followers["@rkey"], "=", rkey),
+			),
+			set: { followers: { "-=": e.select(e.User, () => ({ filter_single: { did: repo } })) } },
+		}),
+	).run(dbClient);
+	if (!updated) {
+		throw new Error(`👥 Failed to delete follow record\n  URI: ${uri}`);
+	}
 }
 
 async function handleMessage(data: RawData) {
@@ -305,11 +334,11 @@ async function handleMessage(data: RawData) {
 			}
 		} else if (op.action === "delete") {
 			if (op.path.startsWith("app.bsky.feed.post")) {
-				handlePostDelete({ repo: message.repo, uri });
+				await handlePostDelete({ uri });
 			} else if (op.path.startsWith("app.bsky.feed.like")) {
-				handleLikeDelete({ repo: message.repo, uri });
+				await handleLikeDelete({ repo: message.repo, uri });
 			} else if (op.path.startsWith("app.bsky.graph.follow")) {
-				handleFollowDelete({ repo: message.repo, uri });
+				await handleFollowDelete({ repo: message.repo, uri });
 			}
 		}
 	}

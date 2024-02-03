@@ -70,29 +70,29 @@ export interface Embed extends std.$Object {
 }
 export interface Post extends std.$Object {
   "embed"?: Embed | null;
-  "createdAt": Date;
-  "parent"?: Post | null;
   "replies": std.BaseObject[];
-  "quoted"?: Post | null;
-  "root"?: Post | null;
   "altText"?: string | null;
   "tags": string[];
   "text": string;
   "uri": string;
-  "author": User;
-  "likes": User[];
-  "reposts": User[];
   "cid": string;
   "labels": string[];
   "langs": string[];
+  "author": User;
+  "likes": User[];
+  "parent"?: Post | null;
+  "quoted"?: Post | null;
+  "reposts": User[];
+  "root"?: Post | null;
+  "createdAt": Date;
 }
 export interface User extends std.$Object {
   "handle": string;
   "did": string;
-  "followers": User[];
   "following": std.BaseObject[];
   "bio": string;
   "displayName": string;
+  "followers": User[];
 }
 export namespace fts {
   export type ElasticLanguage = "ara" | "bul" | "cat" | "ces" | "ckb" | "dan" | "deu" | "ell" | "eng" | "eus" | "fas" | "fin" | "fra" | "gle" | "glg" | "hin" | "hun" | "hye" | "ind" | "ita" | "lav" | "nld" | "nor" | "por" | "ron" | "rus" | "spa" | "swe" | "tha" | "tur" | "zho" | "edb_Brazilian" | "edb_ChineseJapaneseKorean";
