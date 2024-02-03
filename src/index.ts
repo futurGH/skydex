@@ -13,6 +13,7 @@ import * as AppBskyEmbedRecord from "../lexicons/types/app/bsky/embed/record.ts"
 import * as AppBskyEmbedRecordWithMedia from "../lexicons/types/app/bsky/embed/recordWithMedia.ts";
 import * as AppBskyFeedLike from "../lexicons/types/app/bsky/feed/like.ts";
 import * as AppBskyFeedPost from "../lexicons/types/app/bsky/feed/post.ts";
+import * as AppBskyFeedRepost from "../lexicons/types/app/bsky/feed/repost.ts";
 import * as AppBskyGraphFollow from "../lexicons/types/app/bsky/graph/follow.ts";
 import * as ComAtprotoLabelDefs from "../lexicons/types/com/atproto/label/defs.ts";
 import * as ComAtprotoSyncSubscribeRepos from "../lexicons/types/com/atproto/sync/subscribeRepos.ts";
@@ -272,12 +273,51 @@ async function handleActorCreate({ repo }: { repo: string }) {
 	}
 }
 
+async function handleRepostCreate(
+	{ record, repo, uri }: Omit<HandleCreateParams<AppBskyFeedRepost.Record>, "cid">,
+) {
+	const subjectPost = await resolvePost(record.subject.uri);
+	if (!subjectPost) {
+		throw new Error(
+			`🔁 Failed to resolve repost subject post\n  Repost URI: ${uri}\n  Post URI: ${record.subject.uri}`,
+		);
+	}
+
+	const reposter = await resolveUser(repo);
+	if (!reposter) {
+		throw new Error(
+			`🔁 Failed to resolve repost author\n  Repost URI: ${uri}\n  Post URI: ${record.subject.uri}`,
+		);
+	}
+
+	const rkey = uri.split("/").pop();
+	if (!rkey) throw new Error(`🔁 Invalid AT URI in repost create\n  URI: ${uri}`);
+
+	const inserted = await e.update(
+		e.Post,
+		() => ({
+			filter_single: { uri: subjectPost },
+			set: {
+				reposts: {
+					"+=": e.select(e.User, () => ({ filter_single: { did: repo }, "@rkey": e.str(rkey) })),
+				},
+			},
+		}),
+	).run(dbClient);
+	if (!inserted) {
+		throw new Error(
+			`🔁 Failed to insert repost record\n  Repost URI: ${uri}\n  Post URI: ${record.subject.uri}`,
+		);
+	}
+}
+
 async function handlePostDelete({ uri }: { uri: string }) {
 	const removed = await e.delete(e.Post, () => ({ filter_single: { uri } })).run(dbClient);
 	if (!removed) {
 		throw new Error(`📜 Failed to delete post record\n  URI: ${uri}`);
 	}
 }
+
 async function handleLikeDelete({ repo, uri }: HandleDeleteParams) {
 	const rkey = uri.split("/").pop();
 	if (!rkey) throw new Error(`👍 Invalid AT URI in like delete\n  URI: ${uri}`);
@@ -292,6 +332,7 @@ async function handleLikeDelete({ repo, uri }: HandleDeleteParams) {
 		throw new Error(`👍 Failed to delete like record\n  URI: ${uri}`);
 	}
 }
+
 async function handleFollowDelete({ repo, uri }: HandleDeleteParams) {
 	const rkey = uri.split("/").pop();
 	if (!rkey) throw new Error(`👥 Invalid AT URI in follow delete\n  URI: ${uri}`);
@@ -308,6 +349,26 @@ async function handleFollowDelete({ repo, uri }: HandleDeleteParams) {
 	).run(dbClient);
 	if (!updated) {
 		throw new Error(`👥 Failed to delete follow record\n  URI: ${uri}`);
+	}
+}
+
+async function handleRepostDelete({ repo, uri }: HandleDeleteParams) {
+	const rkey = uri.split("/").pop();
+	if (!rkey) throw new Error(`🔁 Invalid AT URI in repost delete\n  URI: ${uri}`);
+
+	const updated = await e.update(
+		e.Post,
+		(post) => ({
+			filter_single: e.op(
+				e.op(post.reposts.did, "=", repo),
+				"and",
+				e.op(post.reposts["@rkey"], "=", rkey),
+			),
+			set: { reposts: { "-=": e.select(e.User, () => ({ filter_single: { did: repo } })) } },
+		}),
+	).run(dbClient);
+	if (!updated) {
+		throw new Error(`🔁 Failed to delete repost record\n  URI: ${uri}`);
 	}
 }
 
@@ -339,6 +400,8 @@ async function handleMessage(data: RawData) {
 
 			if (AppBskyFeedPost.isRecord(record)) {
 				await insertPostRecord({ record, cid: op.cid.toString(), repo: message.repo, uri });
+			} else if (AppBskyFeedRepost.isRecord(record)) {
+				await handleRepostCreate({ record, repo: message.repo, uri });
 			} else if (AppBskyFeedLike.isRecord(record)) {
 				await handleLikeCreate({ record, repo: message.repo, uri });
 			} else if (AppBskyGraphFollow.isRecord(record)) {
@@ -349,6 +412,8 @@ async function handleMessage(data: RawData) {
 		} else if (op.action === "delete") {
 			if (op.path.startsWith("app.bsky.feed.post")) {
 				await handlePostDelete({ uri });
+			} else if (op.path.startsWith("app.bsky.feed.repost")) {
+				await handleRepostDelete({ repo: message.repo, uri });
 			} else if (op.path.startsWith("app.bsky.feed.like")) {
 				await handleLikeDelete({ repo: message.repo, uri });
 			} else if (op.path.startsWith("app.bsky.graph.follow")) {
