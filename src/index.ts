@@ -311,6 +311,31 @@ async function handleRepostCreate(
 	}
 }
 
+async function handleActorUpdate({ record, repo }: { record: AppBskyActorProfile.Record; repo: string }) {
+	const actor = await resolveUser(repo);
+	if (!actor) {
+		throw new Error(`👤 Failed to resolve actor to update\n  DID: ${repo}`);
+	}
+
+	const updated = await e.params(
+		{ displayName: e.optional(e.str), bio: e.optional(e.str) },
+		(params) =>
+			e.update(
+				e.User,
+				(user) => ({
+					filter_single: { did: repo },
+					set: {
+						displayName: e.op(params.displayName, "??", user.displayName),
+						bio: e.op(params.bio, "??", user.bio),
+					},
+				}),
+			),
+	).run(dbClient, { displayName: record.displayName ?? null, bio: record.description ?? null });
+	if (!updated) {
+		throw new Error(`👤 Failed to update actor record\n  DID: ${repo}`);
+	}
+}
+
 async function handlePostDelete({ uri }: { uri: string }) {
 	const removed = await e.delete(e.Post, () => ({ filter_single: { uri } })).run(dbClient);
 	if (!removed) {
@@ -389,7 +414,7 @@ async function handleMessage(data: RawData) {
 	const car = await readCar(message.blocks);
 	for (const op of message.ops) {
 		const uri = `at://${message.repo}/${op.path}`;
-		if (op.action === "create" || op.action === "update") {
+		if (op.action === "create") {
 			if (!op.cid) continue;
 			const rec = car.blocks.get(op.cid);
 			if (!rec) continue;
@@ -405,6 +430,15 @@ async function handleMessage(data: RawData) {
 				await handleFollowCreate({ record, repo: message.repo, uri });
 			} else if (AppBskyActorProfile.isRecord(record)) {
 				await handleActorCreate({ repo: message.repo });
+			}
+		} else if (op.action === "update") {
+			if (!op.cid) continue;
+			const rec = car.blocks.get(op.cid);
+			if (!rec) continue;
+			const record = cborToLexRecord(rec);
+
+			if (AppBskyActorProfile.isRecord(record)) {
+				await handleActorUpdate({ record, repo: message.repo });
 			}
 		} else if (op.action === "delete") {
 			const rkey = op.path?.split("/")?.pop();
