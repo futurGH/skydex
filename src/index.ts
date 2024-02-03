@@ -209,11 +209,18 @@ async function handleLikeCreate(
 	const actor = await resolveUser(repo);
 	if (!actor) throw new Error(`👤 Failed to resolve like author\n  Like URI: ${uri}`);
 
+	const rkey = uri.split("/").pop();
+	if (!rkey) throw new Error(`👍 Invalid AT URI in like create\n  URI: ${uri}`);
+
 	const inserted = await e.update(
 		e.Post,
 		() => ({
 			filter_single: { uri: subjectPost },
-			set: { likes: { "+=": e.select(e.User, () => ({ filter_single: { did: repo } })) } },
+			set: {
+				likes: {
+					"+=": e.select(e.User, () => ({ filter_single: { did: repo }, "@rkey": e.str(rkey) })),
+				},
+			},
 		}),
 	).run(dbClient);
 	if (!inserted) {
@@ -236,11 +243,18 @@ async function handleFollowCreate(
 	const actor = await resolveUser(repo);
 	if (!actor) throw new Error(`👤 Failed to resolve follow author\n  DID: ${repo}`);
 
+	const rkey = uri.split("/").pop();
+	if (!rkey) throw new Error(`👥 Invalid AT URI in follow create\n  URI: ${uri}`);
+
 	const inserted = await e.update(
 		e.User,
 		() => ({
 			filter_single: { did: subjectActor },
-			set: { followers: { "+=": e.select(e.User, () => ({ filter_single: { did: repo } })) } },
+			set: {
+				followers: {
+					"+=": e.select(e.User, () => ({ filter_single: { did: repo }, "@rkey": e.str(rkey) })),
+				},
+			},
 		}),
 	).run(dbClient);
 	if (!inserted) {
