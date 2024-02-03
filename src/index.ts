@@ -21,7 +21,7 @@ import { postUriCache, userDidCache } from "./cache.ts";
 import { filterTruthy } from "./util.ts";
 
 type HandleCreateParams<T> = { record: T; cid: string; repo: string; uri: string };
-type HandleDeleteParams = { repo: string; uri: string };
+type HandleDeleteParams = { repo: string; rkey: string };
 
 const atpClient = new AtpBaseClient();
 const atpAgent = new AtpAgent({ service: "https://bsky.social" });
@@ -318,9 +318,7 @@ async function handlePostDelete({ uri }: { uri: string }) {
 	}
 }
 
-async function handleLikeDelete({ repo, uri }: HandleDeleteParams) {
-	const rkey = uri.split("/").pop();
-	if (!rkey) throw new Error(`👍 Invalid AT URI in like delete\n  URI: ${uri}`);
+async function handleLikeDelete({ repo, rkey }: HandleDeleteParams) {
 	const updated = await e.update(
 		e.Post,
 		(post) => ({
@@ -329,13 +327,11 @@ async function handleLikeDelete({ repo, uri }: HandleDeleteParams) {
 		}),
 	).run(dbClient);
 	if (!updated) {
-		throw new Error(`👍 Failed to delete like record\n  URI: ${uri}`);
+		throw new Error(`👍 Failed to delete like record\n  URI: at://${repo}/app.bsky.feed.like/${rkey}`);
 	}
 }
 
-async function handleFollowDelete({ repo, uri }: HandleDeleteParams) {
-	const rkey = uri.split("/").pop();
-	if (!rkey) throw new Error(`👥 Invalid AT URI in follow delete\n  URI: ${uri}`);
+async function handleFollowDelete({ repo, rkey }: HandleDeleteParams) {
 	const updated = await e.update(
 		e.User,
 		(user) => ({
@@ -348,14 +344,13 @@ async function handleFollowDelete({ repo, uri }: HandleDeleteParams) {
 		}),
 	).run(dbClient);
 	if (!updated) {
-		throw new Error(`👥 Failed to delete follow record\n  URI: ${uri}`);
+		throw new Error(
+			`👥 Failed to delete follow record\n  URI: at://${repo}/app.bsky.graph.follow/${rkey}`,
+		);
 	}
 }
 
-async function handleRepostDelete({ repo, uri }: HandleDeleteParams) {
-	const rkey = uri.split("/").pop();
-	if (!rkey) throw new Error(`🔁 Invalid AT URI in repost delete\n  URI: ${uri}`);
-
+async function handleRepostDelete({ repo, rkey }: HandleDeleteParams) {
 	const updated = await e.update(
 		e.Post,
 		(post) => ({
@@ -368,7 +363,9 @@ async function handleRepostDelete({ repo, uri }: HandleDeleteParams) {
 		}),
 	).run(dbClient);
 	if (!updated) {
-		throw new Error(`🔁 Failed to delete repost record\n  URI: ${uri}`);
+		throw new Error(
+			`🔁 Failed to delete repost record\n  URI: at://${repo}/app.bsky.feed.repost/${rkey}`,
+		);
 	}
 }
 
@@ -410,14 +407,17 @@ async function handleMessage(data: RawData) {
 				await handleActorCreate({ repo: message.repo });
 			}
 		} else if (op.action === "delete") {
+			const rkey = op.path?.split("/")?.pop();
+			if (!rkey) continue;
+
 			if (op.path.startsWith("app.bsky.feed.post")) {
 				await handlePostDelete({ uri });
 			} else if (op.path.startsWith("app.bsky.feed.repost")) {
-				await handleRepostDelete({ repo: message.repo, uri });
+				await handleRepostDelete({ repo: message.repo, rkey });
 			} else if (op.path.startsWith("app.bsky.feed.like")) {
-				await handleLikeDelete({ repo: message.repo, uri });
+				await handleLikeDelete({ repo: message.repo, rkey });
 			} else if (op.path.startsWith("app.bsky.graph.follow")) {
-				await handleFollowDelete({ repo: message.repo, uri });
+				await handleFollowDelete({ repo: message.repo, rkey });
 			}
 		}
 	}
