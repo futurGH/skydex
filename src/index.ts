@@ -171,7 +171,7 @@ async function insertPostRecord({ record, repo, uri, cid }: HandleCreateParams<A
 			author: e.select(e.User, () => ({ filter_single: { id: repo } })),
 			text: record.text,
 			embed: embed
-				? e.insert(e.Embed, { title: embed?.title, description: embed?.description, uri: embed?.uri })
+				? e.json({ title: embed?.title, description: embed?.description, uri: embed?.uri })
 				: undefined,
 			altText,
 

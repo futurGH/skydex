@@ -8,7 +8,7 @@ module default {
 
         required author: User { on target delete delete source; };
         required text: str;
-        embed: Embed;
+        embed: json;
         altText: str;
 
         parent: Post { on target delete allow; };
@@ -28,12 +28,6 @@ module default {
         multi langs: str;
         multi tags: str;
         multi labels: str;
-    }
-
-    type Embed {
-        title: str;
-        description: str;
-        uri: str;
     }
 
     type User {
