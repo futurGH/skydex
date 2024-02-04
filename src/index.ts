@@ -190,7 +190,7 @@ async function insertPostRecord({ record, repo, uri, cid }: HandleCreateParams<A
 			else: e.select(e.Post, () => ({ ...e.Post["*"], filter_single: { uri } })),
 		})),
 		(post) => post["*"],
-	).run(dbClient);
+	).run(dbClient).catch(() => null);
 
 	if (!inserted) throw new Error(`📜 Failed to insert post record\n  URI: ${uri}`);
 	await postUriCache.set(uri, true);
@@ -223,7 +223,7 @@ async function handleLikeCreate(
 				},
 			},
 		}),
-	).run(dbClient);
+	).run(dbClient).catch(() => null);
 	if (!inserted) {
 		throw new Error(
 			`👍 Failed to insert like record\n  Like URI: ${uri}\n  Post URI: ${record.subject.uri}`,
@@ -257,7 +257,7 @@ async function handleFollowCreate(
 				},
 			},
 		}),
-	).run(dbClient);
+	).run(dbClient).catch(() => null);
 	if (!inserted) {
 		throw new Error(
 			`👥 Failed to insert follow record\n  Follow URI: ${uri}\n  Subject DID: ${record.subject}`,
@@ -303,7 +303,7 @@ async function handleRepostCreate(
 				},
 			},
 		}),
-	).run(dbClient);
+	).run(dbClient).catch(() => null);
 	if (!inserted) {
 		throw new Error(
 			`🔁 Failed to insert repost record\n  Repost URI: ${uri}\n  Post URI: ${record.subject.uri}`,
@@ -330,7 +330,9 @@ async function handleActorUpdate({ record, repo }: { record: AppBskyActorProfile
 					},
 				}),
 			),
-	).run(dbClient, { displayName: record.displayName ?? null, bio: record.description ?? null });
+	).run(dbClient, { displayName: record.displayName ?? null, bio: record.description ?? null }).catch(() =>
+		null
+	);
 	if (!updated) {
 		throw new Error(`👤 Failed to update actor record\n  DID: ${repo}`);
 	}
@@ -344,72 +346,90 @@ async function handleHandleUpdate({ repo, handle }: { repo: string; handle: stri
 
 	const updated = await e.update(e.User, () => ({ filter_single: { did: repo }, set: { handle } })).run(
 		dbClient,
-	);
+	).catch(() => null);
 	if (!updated) {
 		throw new Error(`👤 Failed to update actor record\n  DID: ${repo}`);
 	}
 }
 
 async function handlePostDelete({ uri }: { uri: string }) {
-	const removed = await e.delete(e.Post, () => ({ filter_single: { uri } })).run(dbClient);
-	if (!removed) {
-		throw new Error(`📜 Failed to delete post record\n  URI: ${uri}`);
+	try {
+		await e.delete(e.Post, () => ({ filter_single: { uri } })).run(dbClient);
+	} catch (e) {
+		throw new Error(`📜 Failed to delete post record\n  URI: ${uri}\n  Error: ${e}`);
+	} finally {
+		await postUriCache.delete(uri);
 	}
 }
 
 async function handleLikeDelete({ repo, rkey }: HandleDeleteParams) {
-	const updated = await e.update(
-		e.Post,
-		(post) => ({
-			filter_single: e.op(e.op(post.likes.did, "=", repo), "and", e.op(post.likes["@rkey"], "=", rkey)),
-			set: { likes: { "-=": e.select(e.User, () => ({ filter_single: { did: repo } })) } },
-		}),
-	).run(dbClient);
-	if (!updated) {
-		throw new Error(`👍 Failed to delete like record\n  URI: at://${repo}/app.bsky.feed.like/${rkey}`);
+	try {
+		await e.update(
+			e.Post,
+			(post) => ({
+				filter_single: e.op(
+					e.op(post.likes.did, "=", repo),
+					"and",
+					e.op(post.likes["@rkey"], "=", rkey),
+				),
+				set: { likes: { "-=": e.select(e.User, () => ({ filter_single: { did: repo } })) } },
+			}),
+		).run(dbClient);
+	} catch (e) {
+		throw new Error(
+			`👍 Failed to delete like record\n  URI: at://${repo}/app.bsky.feed.like/${rkey}\n  Error: ${e}`,
+		);
 	}
 }
 
 async function handleFollowDelete({ repo, rkey }: HandleDeleteParams) {
-	const updated = await e.update(
-		e.User,
-		(user) => ({
-			filter_single: e.op(
-				e.op(user.followers.did, "=", repo),
-				"and",
-				e.op(user.followers["@rkey"], "=", rkey),
-			),
-			set: { followers: { "-=": e.select(e.User, () => ({ filter_single: { did: repo } })) } },
-		}),
-	).run(dbClient);
-	if (!updated) {
+	try {
+		await e.update(
+			e.User,
+			(user) => ({
+				filter_single: e.op(
+					e.op(user.followers.did, "=", repo),
+					"and",
+					e.op(user.followers["@rkey"], "=", rkey),
+				),
+				set: { followers: { "-=": e.select(e.User, () => ({ filter_single: { did: repo } })) } },
+			}),
+		).run(dbClient);
+	} catch (e) {
 		throw new Error(
-			`👥 Failed to delete follow record\n  URI: at://${repo}/app.bsky.graph.follow/${rkey}`,
+			`👥 Failed to delete follow record\n  URI: at://${repo}/app.bsky.graph.follow/${rkey}\n  Error: ${e}`,
 		);
 	}
 }
 
 async function handleRepostDelete({ repo, rkey }: HandleDeleteParams) {
-	const updated = await e.update(
-		e.Post,
-		(post) => ({
-			filter_single: e.op(
-				e.op(post.reposts.did, "=", repo),
-				"and",
-				e.op(post.reposts["@rkey"], "=", rkey),
-			),
-			set: { reposts: { "-=": e.select(e.User, () => ({ filter_single: { did: repo } })) } },
-		}),
-	).run(dbClient);
-	if (!updated) {
+	try {
+		await e.update(
+			e.Post,
+			(post) => ({
+				filter_single: e.op(
+					e.op(post.reposts.did, "=", repo),
+					"and",
+					e.op(post.reposts["@rkey"], "=", rkey),
+				),
+				set: { reposts: { "-=": e.select(e.User, () => ({ filter_single: { did: repo } })) } },
+			}),
+		).run(dbClient);
+	} catch (e) {
 		throw new Error(
-			`🔁 Failed to delete repost record\n  URI: at://${repo}/app.bsky.feed.repost/${rkey}`,
+			`🔁 Failed to delete repost record\n  URI: at://${repo}/app.bsky.feed.repost/${rkey}\n  Error: ${e}`,
 		);
 	}
 }
 
 async function handleActorDelete({ repo }: { repo: string }) {
-	await e.delete(e.User, () => ({ filter_single: { did: repo } })).run(dbClient);
+	try {
+		await e.delete(e.User, () => ({ filter_single: { did: repo } })).run(dbClient);
+	} catch (e) {
+		throw new Error(`👤 Failed to delete actor record\n  DID: ${repo}\n  Error: ${e}`);
+	} finally {
+		await userDidCache.delete(repo);
+	}
 }
 
 let cursor: unknown = await cursorPersist.get("cursor");
