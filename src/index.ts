@@ -17,7 +17,7 @@ import * as AppBskyFeedRepost from "../lexicons/types/app/bsky/feed/repost.ts";
 import * as AppBskyGraphFollow from "../lexicons/types/app/bsky/graph/follow.ts";
 import * as ComAtprotoLabelDefs from "../lexicons/types/com/atproto/label/defs.ts";
 import * as ComAtprotoSyncSubscribeRepos from "../lexicons/types/com/atproto/sync/subscribeRepos.ts";
-import { postUriCache, userDidCache } from "./cache.ts";
+import { cursorPersist, postUriCache, userDidCache } from "./cache.ts";
 import { filterTruthy } from "./util.ts";
 
 type HandleCreateParams<T> = { record: T; cid: string; repo: string; uri: string };
@@ -412,6 +412,8 @@ async function handleActorDelete({ repo }: { repo: string }) {
 	await e.delete(e.User, () => ({ filter_single: { did: repo } })).run(dbClient);
 }
 
+let cursor: unknown = await cursorPersist.get("cursor");
+
 async function handleMessage(data: RawData) {
 	const frame = Frame.fromBytes(data as never);
 
@@ -420,10 +422,10 @@ async function handleMessage(data: RawData) {
 		throw new Error("Invalid frame structure: " + util.inspect(frame, false, 2));
 	}
 
-	const message = atpClient.xrpc.lex.assertValidXrpcMessage("com.atproto.sync.subscribeRepos", {
-		$type: `com.atproto.sync.subscribeRepos${frame.header.t}`,
-		...frame.body,
-	});
+	const message = atpClient.xrpc.lex.assertValidXrpcMessage(
+		`com.atproto.sync.subscribeRepos${cursor ? `?cursor=${cursor}` : ""}`,
+		{ $type: `com.atproto.sync.subscribeRepos${frame.header.t}`, ...frame.body },
+	);
 
 	if (ComAtprotoSyncSubscribeRepos.isHandle(message)) {
 		await handleHandleUpdate({ repo: message.did, handle: message.handle });
@@ -478,11 +480,18 @@ async function handleMessage(data: RawData) {
 				}
 			}
 		}
+
+		cursor = message.seq;
 	}
 }
 
 async function main() {
 	const socket = new WebSocket("wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos");
+	socket.on("open", () => {
+		setInterval(() => {
+			cursorPersist.set("cursor", cursor);
+		}, 30 * 1000);
+	});
 	socket.on("message", async (data) => {
 		handleMessage(data).catch(console.error);
 	});
