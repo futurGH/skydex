@@ -422,10 +422,10 @@ async function handleMessage(data: RawData) {
 		throw new Error("Invalid frame structure: " + util.inspect(frame, false, 2));
 	}
 
-	const message = atpClient.xrpc.lex.assertValidXrpcMessage(
-		`com.atproto.sync.subscribeRepos${cursor ? `?cursor=${cursor}` : ""}`,
-		{ $type: `com.atproto.sync.subscribeRepos${frame.header.t}`, ...frame.body },
-	);
+	const message = atpClient.xrpc.lex.assertValidXrpcMessage("com.atproto.sync.subscribeRepos", {
+		$type: `com.atproto.sync.subscribeRepos${frame.header.t}`,
+		...frame.body,
+	});
 
 	if (ComAtprotoSyncSubscribeRepos.isHandle(message)) {
 		await handleHandleUpdate({ repo: message.did, handle: message.handle });
@@ -486,7 +486,9 @@ async function handleMessage(data: RawData) {
 }
 
 async function main() {
-	const socket = new WebSocket("wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos");
+	const socket = new WebSocket(
+		`wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos${cursor ? `?cursor=${cursor}` : ""}`,
+	);
 	socket.on("open", () => {
 		setInterval(() => {
 			cursorPersist.set("cursor", cursor);
