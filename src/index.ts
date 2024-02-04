@@ -24,7 +24,7 @@ type HandleCreateParams<T> = { record: T; cid: string; repo: string; uri: string
 type HandleDeleteParams = { repo: string; rkey: string };
 
 const atpClient = new AtpBaseClient();
-const atpAgent = new AtpAgent({ service: "https://bsky.social" });
+const atpAgent = new AtpAgent({ service: "https://api.bsky.app" });
 const dbClient = createClient();
 
 // Rate limit is 3000/5min (10/s); we use slightly conservative numbers to be safe
