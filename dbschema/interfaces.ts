@@ -72,6 +72,7 @@ export interface Post extends std.$Object {
   "root"?: Post | null;
   "altText"?: string | null;
   "cid": string;
+  "embed"?: unknown | null;
   "labels": string[];
   "langs": string[];
   "tags": string[];
@@ -79,7 +80,6 @@ export interface Post extends std.$Object {
   "author": User;
   "likes": User[];
   "reposts": User[];
-  "embed"?: unknown | null;
 }
 export interface User extends std.$Object {
   "handle": string;

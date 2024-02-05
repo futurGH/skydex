@@ -15,11 +15,11 @@ module default {
         root: Post { on target delete allow; };
         quoted: Post { on target delete allow; };
 
-        required multi likes: User {
+        multi likes: User {
             rkey: str;
             on target delete allow;
         };
-        required multi reposts: User {
+        multi reposts: User {
             rkey: str;
             on target delete allow;
         };
@@ -39,7 +39,7 @@ module default {
         required displayName: str;
         required bio: str;
 
-        required multi followers: User {
+        multi followers: User {
             rkey: str;
             on target delete allow;
         };
