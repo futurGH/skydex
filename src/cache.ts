@@ -9,5 +9,5 @@ export const postUriCache = new Keyv<boolean>({ namespace: "posts", ttl: 1000 * 
 export const cursorPersist = new Keyv({
 	namespace: "cursor",
 	ttl: 1000 * 60 * 60 * 24 * 3,
-	store: new KeyvFile({ filename: path.join(__dirname, "cursor.json") }),
+	store: new KeyvFile({ filename: path.join(__dirname, "cursor.json"), writeDelay: 1000 * 15 }),
 });
