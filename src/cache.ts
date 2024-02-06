@@ -11,3 +11,8 @@ export const cursorPersist = new Keyv({
 	ttl: 1000 * 60 * 60 * 24 * 3,
 	store: new KeyvFile({ filename: path.join(__dirname, "..", "cursor.json"), writeDelay: 1000 * 15 }),
 });
+export const failedMessages = new Keyv({
+	namespace: "failed",
+	store: new KeyvFile({ filename: path.join(__dirname, "..", "_failed_messages.json") }),
+});
+}

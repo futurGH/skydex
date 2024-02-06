@@ -18,7 +18,7 @@ import * as AppBskyFeedRepost from "../lexicons/types/app/bsky/feed/repost.ts";
 import * as AppBskyGraphFollow from "../lexicons/types/app/bsky/graph/follow.ts";
 import * as ComAtprotoLabelDefs from "../lexicons/types/com/atproto/label/defs.ts";
 import * as ComAtprotoSyncSubscribeRepos from "../lexicons/types/com/atproto/sync/subscribeRepos.ts";
-import { cursorPersist, postUriCache, userDidCache } from "./cache.ts";
+import { cursorPersist, failedMessages, postUriCache, userDidCache } from "./cache.ts";
 import { filterTruthy, normalize, PostProps, Result, UserProps } from "./util.ts";
 
 type HandleCreateParams<T> = { record: T; cid: string; repo: string; uri: string };
@@ -669,57 +669,72 @@ async function handleMessage(data: RawData) {
 	});
 
 	if (ComAtprotoSyncSubscribeRepos.isHandle(message)) {
-		await handleHandleUpdate({ repo: message.did, handle: message.handle });
+		try {
+			await handleHandleUpdate({ repo: message.did, handle: message.handle });
+		} catch (e) {
+			await failedMessages.set(`${message.did}::handle`, message);
+			throw e;
+		}
 	} else if (ComAtprotoSyncSubscribeRepos.isTombstone(message)) {
-		await handleActorDelete({ repo: message.did });
+		try {
+			await handleActorDelete({ repo: message.did });
+		} catch (e) {
+			await failedMessages.set(`${message.did}::tombstone`, message);
+			throw e;
+		}
 	} else if (ComAtprotoSyncSubscribeRepos.isInfo(message)) {
 		console.log(`ℹ️ Firehose info ${message.name}: ${message.message}`);
 	} else if (ComAtprotoSyncSubscribeRepos.isCommit(message)) {
-		if (!message.blocks?.length) return;
+		try {
+			if (!message.blocks?.length) return;
 
-		const car = await readCar(message.blocks);
-		for (const op of message.ops) {
-			const uri = `at://${message.repo}/${op.path}`;
-			if (op.action === "create") {
-				if (!op.cid) continue;
-				const rec = car.blocks.get(op.cid);
-				if (!rec) continue;
-				const record = cborToLexRecord(rec);
+			const car = await readCar(message.blocks);
+			for (const op of message.ops) {
+				const uri = `at://${message.repo}/${op.path}`;
+				if (op.action === "create") {
+					if (!op.cid) continue;
+					const rec = car.blocks.get(op.cid);
+					if (!rec) continue;
+					const record = cborToLexRecord(rec);
 
-				if (AppBskyFeedPost.isRecord(record)) {
-					await handlePostCreate({ record, cid: op.cid.toString(), repo: message.repo, uri });
-				} else if (AppBskyFeedRepost.isRecord(record)) {
-					await handleRepostCreate({ record, repo: message.repo, uri });
-				} else if (AppBskyFeedLike.isRecord(record)) {
-					await handleLikeCreate({ record, repo: message.repo, uri });
-				} else if (AppBskyGraphFollow.isRecord(record)) {
-					await handleFollowCreate({ record, repo: message.repo, uri });
-				} else if (AppBskyActorProfile.isRecord(record)) {
-					await handleActorCreate({ repo: message.repo });
-				}
-			} else if (op.action === "update") {
-				if (!op.cid) continue;
-				const rec = car.blocks.get(op.cid);
-				if (!rec) continue;
-				const record = cborToLexRecord(rec);
+					if (AppBskyFeedPost.isRecord(record)) {
+						await handlePostCreate({ record, cid: op.cid.toString(), repo: message.repo, uri });
+					} else if (AppBskyFeedRepost.isRecord(record)) {
+						await handleRepostCreate({ record, repo: message.repo, uri });
+					} else if (AppBskyFeedLike.isRecord(record)) {
+						await handleLikeCreate({ record, repo: message.repo, uri });
+					} else if (AppBskyGraphFollow.isRecord(record)) {
+						await handleFollowCreate({ record, repo: message.repo, uri });
+					} else if (AppBskyActorProfile.isRecord(record)) {
+						await handleActorCreate({ repo: message.repo });
+					}
+				} else if (op.action === "update") {
+					if (!op.cid) continue;
+					const rec = car.blocks.get(op.cid);
+					if (!rec) continue;
+					const record = cborToLexRecord(rec);
 
-				if (AppBskyActorProfile.isRecord(record)) {
-					await handleActorUpdate({ record, repo: message.repo });
-				}
-			} else if (op.action === "delete") {
-				const rkey = op.path?.split("/")?.pop();
-				if (!rkey) continue;
+					if (AppBskyActorProfile.isRecord(record)) {
+						await handleActorUpdate({ record, repo: message.repo });
+					}
+				} else if (op.action === "delete") {
+					const rkey = op.path?.split("/")?.pop();
+					if (!rkey) continue;
 
-				if (op.path.startsWith("app.bsky.feed.post")) {
-					await handlePostDelete({ uri });
-				} else if (op.path.startsWith("app.bsky.feed.repost")) {
-					await handleRepostDelete({ repo: message.repo, rkey });
-				} else if (op.path.startsWith("app.bsky.feed.like")) {
-					await handleLikeDelete({ repo: message.repo, rkey });
-				} else if (op.path.startsWith("app.bsky.graph.follow")) {
-					await handleFollowDelete({ repo: message.repo, rkey });
+					if (op.path.startsWith("app.bsky.feed.post")) {
+						await handlePostDelete({ uri });
+					} else if (op.path.startsWith("app.bsky.feed.repost")) {
+						await handleRepostDelete({ repo: message.repo, rkey });
+					} else if (op.path.startsWith("app.bsky.feed.like")) {
+						await handleLikeDelete({ repo: message.repo, rkey });
+					} else if (op.path.startsWith("app.bsky.graph.follow")) {
+						await handleFollowDelete({ repo: message.repo, rkey });
+					}
 				}
 			}
+		} catch (e) {
+			await failedMessages.set(`${message.repo}::${message.rev}`, message);
+			throw e;
 		}
 
 		cursor = message.seq;
