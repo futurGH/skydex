@@ -1,8 +1,8 @@
-import { AtpAgent, AtpBaseClient, AtUri } from "@atproto/api";
+import { AtpAgent, AtpBaseClient } from "@atproto/api";
 import { cborToLexRecord, readCar } from "@atproto/repo";
 import { Frame } from "@atproto/xrpc-server";
 import Bottleneck from "bottleneck";
-import { createClient } from "edgedb";
+import { createClient, EdgeDBError } from "edgedb";
 import * as util from "util";
 import { type RawData, WebSocket } from "ws";
 import e from "../dbschema/edgeql-js";
@@ -11,6 +11,7 @@ import * as AppBskyEmbedExternal from "../lexicons/types/app/bsky/embed/external
 import * as AppBskyEmbedImages from "../lexicons/types/app/bsky/embed/images.ts";
 import * as AppBskyEmbedRecord from "../lexicons/types/app/bsky/embed/record.ts";
 import * as AppBskyEmbedRecordWithMedia from "../lexicons/types/app/bsky/embed/recordWithMedia.ts";
+import type { PostView } from "../lexicons/types/app/bsky/feed/defs.ts";
 import * as AppBskyFeedLike from "../lexicons/types/app/bsky/feed/like.ts";
 import * as AppBskyFeedPost from "../lexicons/types/app/bsky/feed/post.ts";
 import * as AppBskyFeedRepost from "../lexicons/types/app/bsky/feed/repost.ts";
@@ -18,7 +19,7 @@ import * as AppBskyGraphFollow from "../lexicons/types/app/bsky/graph/follow.ts"
 import * as ComAtprotoLabelDefs from "../lexicons/types/com/atproto/label/defs.ts";
 import * as ComAtprotoSyncSubscribeRepos from "../lexicons/types/com/atproto/sync/subscribeRepos.ts";
 import { cursorPersist, postUriCache, userDidCache } from "./cache.ts";
-import { filterTruthy } from "./util.ts";
+import { filterTruthy, PostProps, Result, UserProps } from "./util.ts";
 
 type HandleCreateParams<T> = { record: T; cid: string; repo: string; uri: string };
 type HandleDeleteParams = { repo: string; rkey: string };
@@ -43,8 +44,11 @@ rateLimiter.on("failed", (error, jobInfo) => {
 	// retryCount=3 → 29 393ms
 	// retryCount=4 → 328 633ms
 	// retryCount>4 → give up
+
+	const statusCode = error?.statusCode ?? error?.status;
+
 	let backoff = backoffs.get(jobInfo.options.id) ?? (backoffs.set(jobInfo.options.id, 250), 250);
-	if (error?.statusCode === 429) {
+	if (statusCode === 429) {
 		// Wait until rate limit resets if we have 0 requests remaining
 		if (error?.headers?.["ratelimit-remaining"] && error?.headers?.["ratelimit-reset"]) {
 			if (error.headers["ratelimit-remaining"] === "0") {
@@ -71,69 +75,187 @@ rateLimiter.on("failed", (error, jobInfo) => {
 		return null;
 	}
 });
+rateLimiter.on("error", (error) => {
+	console.error("🚨 Rate limiter error:", error);
+});
 
-async function resolveUser(did: string): Promise<string | null> {
+const unresolvedPromises = new Map<string, Promise<unknown>>();
+async function limit<T>(options: Bottleneck.JobOptions, fn: () => Promise<T>): Promise<T> {
+	const id = options.id ?? `unknown::${Date.now()}`;
+	const existing = unresolvedPromises.get(id);
+	if (existing) return existing as Promise<T>;
+
+	const scheduled = rateLimiter.schedule(options, fn).then((res) => {
+		unresolvedPromises.delete(id);
+		return res;
+	});
+	unresolvedPromises.set(id, scheduled);
+	return scheduled;
+}
+
+async function apiGetPost(uri: string): Promise<Result<PostView>> {
+	try {
+		const result = await limit({ id: `app.bsky.feed.getPosts::${uri}` }, async () => {
+			const res = await atpAgent.api.app.bsky.feed.getPosts({ uris: [uri] }).catch((e) => ({
+				success: false,
+				data: e,
+			}));
+			if (!res.success) throw res;
+			return res.data?.posts?.[0];
+		}) ?? null;
+		return [result, null];
+	} catch (e) {
+		return [null, e];
+	}
+}
+
+async function resolveUser(did: string): Promise<Result<string>> {
 	const cached = await userDidCache.get(did);
-	if (cached) return did;
+	if (cached) return [did, null];
 
-	const user = await e.select(e.User, () => ({ ...e.User["*"], filter_single: { did } })).run(dbClient);
+	const user = await e.select(e.User, () => ({ filter_single: { did } })).run(dbClient);
 	if (user) {
 		await userDidCache.set(did, true);
-		return did;
+		return [did, null];
 	}
 
-	const profile = await rateLimiter.schedule(
+	const profile = await limit(
 		{ id: `app.bsky.actor.getProfile::${did}` },
 		() => atpAgent.api.app.bsky.actor.getProfile({ actor: did }),
-	);
-	if (!profile?.success) return null;
+	).catch((e) => e);
+	if (!profile?.success) {
+		if (profile?.message?.includes("Profile not found")) return [null, null];
+		return [null, profile];
+	}
 	const { displayName = profile.data.handle, handle, description: bio = "" } = profile.data;
 
-	const inserted = await e.insert(e.User, {
+	// { id: string } -> inserted or conflict on did
+	// UserProps      -> conflict on handle
+	// Error          -> miscellaneous error
+	// null           -> conflict on did but failed to select conflicting object
+	const inserted: { id: string } | UserProps | Error | null = await e.insert(e.User, {
 		did,
 		displayName,
 		handle,
 		bio,
 		followers: e.cast(e.User, e.set()),
-	}).unlessConflict((user) => ({
-		on: user.did,
-		else: e.select(e.User, () => ({ ...e.User["*"], filter_single: { did } })),
-	})).run(dbClient).catch(() => null);
-	if (!inserted) return null;
+	}).unlessConflict((user) => ({ on: user.handle, else: user })).run(dbClient).catch((err) => {
+		// EdgeDB only allows `unlessConflict` on any one property
+		// There should never be a conflict on did in theory because we checked if a user exists with this did earlier
+		// Unfortunately race conditions exist, and since we're handling firehose messages asynchronously,
+		// the same user could be requested multiple times simultaneously.
+		// If there's a conflict on did, the least bad solution is to just make another request to query the user
+		if (!(err instanceof EdgeDBError) || !err.message.includes("did violates exclusivity constraint")) {
+			throw err;
+		}
+		return e.select(e.User, () => ({ filter_single: { did } })).run(dbClient);
+	}).catch((e) => e instanceof Error ? e : new Error(e?.message ? e.message : util.inspect(e)));
+	if (!inserted || inserted instanceof Error) return [null, inserted];
+
+	// If there's a conflict on handle, we should update both users' handles with fresh data to be safe
+	if ("did" in inserted && typeof inserted.did === "string") {
+		const previousHandleOwnerDid = inserted.did;
+		const previousHandleOwner = await limit({
+			id: `app.bsky.actor.getProfile::${previousHandleOwnerDid}`,
+		}, () => atpAgent.api.app.bsky.actor.getProfile({ actor: previousHandleOwnerDid })).catch(
+			async (err) => {
+				// If the user has been deleted, we can give away the handle, problem solved
+				if (err?.message?.includes("Profile not found")) {
+					await e.delete(e.User, () => ({ filter_single: { did } })).run(dbClient);
+				}
+				// Otherwise, we'll play it safe and do nothing
+				return err instanceof Error ? err : new Error(err?.message ? err.message : util.inspect(err));
+			},
+		);
+		if (previousHandleOwner instanceof Error || !previousHandleOwner?.success) {
+			return [
+				null,
+				new Error(
+					`Failed to resolve owner ${previousHandleOwnerDid} of handle @${handle} claimed by ${did}`,
+					{ cause: previousHandleOwner instanceof Error ? previousHandleOwner : undefined },
+				),
+			];
+		}
+
+		const updatedPreviousOwner = await e.update(
+			e.User,
+			() => ({
+				filter_single: { did: previousHandleOwnerDid },
+				set: { handle: previousHandleOwner.data.handle },
+			}),
+		).run(dbClient).catch((e) => new Error(e));
+		if (!updatedPreviousOwner || updatedPreviousOwner instanceof Error) {
+			return [null, updatedPreviousOwner];
+		}
+
+		const newHandleOwner = await e.insert(e.User, {
+			did,
+			displayName,
+			handle,
+			bio,
+			followers: e.cast(e.User, e.set()),
+		}).unlessConflict((user) => ({ on: user.did, else: e.update(user, () => ({ set: { handle } })) }))
+			.run(dbClient).catch((err) => {
+				// See comments on const inserted = ... .catch(err => { ... })
+				if (
+					!(err instanceof EdgeDBError)
+					|| !err.message.includes("did violates exclusivity constraint")
+				) {
+					throw err;
+				}
+				return e.select(e.User, () => ({ filter_single: { did } })).run(dbClient);
+			}).catch((e) => e instanceof Error ? e : new Error(e?.message ? e.message : util.inspect(e)));
+		if (!newHandleOwner || newHandleOwner instanceof Error) return [null, newHandleOwner];
+	}
 
 	await userDidCache.set(did, true);
-	return did;
+	return [did, null];
 }
 
-async function resolvePost(uri: string): Promise<string | null> {
+async function resolvePost(uri: string): Promise<Result<string>> {
 	const cached = await postUriCache.get(uri);
-	if (cached) return uri;
+	if (cached) return [uri, null];
 
 	const postFromDb = await e.select(e.Post, () => ({ ...e.Post["*"], filter_single: { uri } })).run(
 		dbClient,
-	);
+	).catch(() => null);
 	if (postFromDb) {
 		await postUriCache.set(uri, true);
-		return uri;
+		return [uri, null];
 	}
 
-	const { host: repo, rkey } = new AtUri(uri);
-	const { cid, value: record } = await rateLimiter.schedule(
-		{ id: `app.bsky.feed.post.get::${uri}` },
-		() => atpAgent.api.app.bsky.feed.post.get({ repo, rkey }),
-	).catch(() => ({ cid: null, value: null }));
-	if (!record) return null;
+	const [postView, postViewError] = await apiGetPost(uri).catch((e) => [null, e] as const);
 
-	const inserted = await insertPostRecord({ record, repo, uri, cid }).catch(() => null);
-	if (!inserted) return null;
+	if (postViewError) return [null, postViewError];
+	if (!postView) return [null, null];
+
+	const { cid, record, author } = postView;
+
+	if (!AppBskyFeedPost.isRecord(record) || !author?.did) {
+		return [null, new Error(`Invalid PostView:\n${util.inspect(postView)}`)];
+	}
+
+	const inserted = await insertPostRecord({ record, uri, cid, repo: author.did }).catch((err) =>
+		err instanceof Error ? err : null
+	);
+	if (!inserted) return [null, new Error(`Failed to insert post record ${uri}`)];
+	if (inserted instanceof Error) return [null, inserted];
 
 	await postUriCache.set(uri, true);
-	return uri;
+	return [uri, null];
 }
 
-async function insertPostRecord({ record, repo, uri, cid }: HandleCreateParams<AppBskyFeedPost.Record>) {
-	const author = await resolveUser(repo);
-	if (!author) throw new Error(`👤 Failed to resolve post author\n  URI: ${uri}`);
+async function insertPostRecord(
+	{ record, repo, uri, cid }: HandleCreateParams<AppBskyFeedPost.Record>,
+): Promise<Result<PostProps>> {
+	const [author, authorError] = await resolveUser(repo);
+	if (authorError) {
+		return [
+			null,
+			new Error(`👤 Failed to resolve post author\n  URI: ${uri}`, { cause: authorError ?? undefined }),
+		];
+	}
+	if (!author) return [null, null];
 
 	const labels = ComAtprotoLabelDefs.isSelfLabels(record.labels)
 		? record.labels.values.map(({ val }) => val)
@@ -158,9 +280,24 @@ async function insertPostRecord({ record, repo, uri, cid }: HandleCreateParams<A
 	const parentUri = record.reply?.parent?.uri;
 	const rootUri = record.reply?.root?.uri;
 
-	const parent = parentUri ? await resolvePost(parentUri) : undefined,
-		root = rootUri ? await resolvePost(rootUri) : undefined,
-		quoted = quotedUri ? await resolvePost(quotedUri) : undefined;
+	const [parent, parentError] = parentUri ? await resolvePost(parentUri) : [],
+		[root, rootError] = rootUri
+			? rootUri === parentUri ? [parent, parentError] : await resolvePost(rootUri)
+			: [],
+		[quoted, quotedError] = quotedUri ? await resolvePost(quotedUri) : [];
+
+	if (parentError || rootError || quotedError) {
+		return [
+			null,
+			new Error(
+				`📜 Failed to resolve post references\n  URI: ${uri}\n  Parent: ${parentError}\n  Root: ${rootError}\n  Quoted: ${quotedError}`,
+				{ cause: parentError ?? rootError ?? quotedError ?? undefined },
+			),
+		];
+	}
+
+	// There's another scenario where any of the 3 resolvePosts returns [null, null] because either the requested post
+	// or its author have been deleted. In this case, it makes sense to pretend that post doesn't exist.
 
 	const inserted = await e.select(
 		e.insert(e.Post, {
@@ -168,7 +305,7 @@ async function insertPostRecord({ record, repo, uri, cid }: HandleCreateParams<A
 			cid,
 			createdAt: e.datetime(new Date(record.createdAt)),
 
-			author: e.select(e.User, () => ({ filter_single: { id: repo } })),
+			author: e.select(e.User, () => ({ filter_single: { did: repo } })),
 			text: record.text,
 			embed: embed
 				? e.json({ title: embed?.title, description: embed?.description, uri: embed?.uri })
@@ -185,30 +322,60 @@ async function insertPostRecord({ record, repo, uri, cid }: HandleCreateParams<A
 			langs: record.langs,
 			tags: record.tags,
 			labels,
-		}).unlessConflict((post) => ({
-			on: post.uri,
-			else: e.select(e.Post, () => ({ ...e.Post["*"], filter_single: { uri } })),
-		})),
+		}).unlessConflict((post) => ({ on: post.uri, else: post })),
 		(post) => post["*"],
-	).run(dbClient).catch(() => null);
+	).run(dbClient).catch((e) => {
+		console.log("caught", e);
+		return e instanceof EdgeDBError ? e : null;
+	});
 
-	if (!inserted) throw new Error(`📜 Failed to insert post record\n  URI: ${uri}`);
+	if (inserted instanceof EdgeDBError) {
+		return [null, new Error(`📜 Failed to insert post record\n  URI: ${uri}`, { cause: inserted })];
+	}
+	if (!inserted) return [null, null];
+
 	await postUriCache.set(uri, true);
-	return inserted;
+	return [inserted, null];
+}
+
+async function handlePostCreate({ record, repo, uri, cid }: HandleCreateParams<AppBskyFeedPost.Record>) {
+	const [inserted, insertionError] = await insertPostRecord({ record, repo, uri, cid });
+	if (insertionError) {
+		throw new Error(`📜 Failed to insert post record\n  URI: ${uri}`, { cause: insertionError });
+	}
+	if (!inserted) {
+		console.warn(`📜 Skipping insertion of post ${uri}`);
+	}
 }
 
 async function handleLikeCreate(
 	{ record, repo, uri }: Omit<HandleCreateParams<AppBskyFeedLike.Record>, "cid">,
 ) {
-	const subjectPost = await resolvePost(record.subject.uri);
-	if (!subjectPost) {
+	// Feed generators can also receive likes
+	if (!record.subject.uri.includes("app.bsky.feed.post")) return;
+
+	const [subjectPost, subjectPostError] = await resolvePost(record.subject.uri);
+	if (subjectPostError) {
 		throw new Error(
 			`👍 Failed to resolve like subject post\n  Post URI: ${record.subject.uri}\n  Like URI: ${uri}`,
+			{ cause: subjectPostError },
 		);
 	}
+	if (!subjectPost) {
+		console.warn(
+			`👍 Could not resolve like subject post, skipping\n  Post URI: ${record.subject.uri}\n  Like URI: ${uri}`,
+		);
+		return;
+	}
 
-	const actor = await resolveUser(repo);
-	if (!actor) throw new Error(`👤 Failed to resolve like author\n  Like URI: ${uri}`);
+	const [actor, actorError] = await resolveUser(repo);
+	if (actorError) {
+		throw new Error(`👤 Failed to resolve like author\n  Like URI: ${uri}`, { cause: actorError });
+	}
+	if (!actor) {
+		console.warn(`👤 Could not resolve like author, skipping\n  Like URI: ${uri}`);
+		return;
+	}
 
 	const rkey = uri.split("/").pop();
 	if (!rkey) throw new Error(`👍 Invalid AT URI in like create\n  URI: ${uri}`);
@@ -223,10 +390,11 @@ async function handleLikeCreate(
 				},
 			},
 		}),
-	).run(dbClient).catch(() => null);
-	if (!inserted) {
+	).run(dbClient).catch((e) => e instanceof Error ? e : new Error(e?.message ? e : util.inspect(e)));
+	if (inserted instanceof Error) {
 		throw new Error(
 			`👍 Failed to insert like record\n  Like URI: ${uri}\n  Post URI: ${record.subject.uri}`,
+			{ cause: inserted },
 		);
 	}
 }
@@ -234,15 +402,28 @@ async function handleLikeCreate(
 async function handleFollowCreate(
 	{ record, repo, uri }: Omit<HandleCreateParams<AppBskyGraphFollow.Record>, "cid">,
 ) {
-	const subjectActor = await resolveUser(record.subject);
-	if (!subjectActor) {
+	const [subjectActor, subjectActorError] = await resolveUser(record.subject);
+	if (subjectActorError) {
 		throw new Error(
 			`👤 Failed to resolve follow subject\n  Subject DID: ${record.subject}\n  Source DID: ${repo}`,
+			{ cause: subjectActorError },
 		);
 	}
+	if (!subjectActor) {
+		console.warn(
+			`👤 Could not resolve follow subject, skipping\n  Subject DID: ${record.subject}\n  Source DID: ${repo}`,
+		);
+		return;
+	}
 
-	const actor = await resolveUser(repo);
-	if (!actor) throw new Error(`👤 Failed to resolve follow author\n  DID: ${repo}`);
+	const [actor, actorError] = await resolveUser(repo);
+	if (actorError) {
+		throw new Error(`👤 Failed to resolve follow author\n  DID: ${repo}`, { cause: actorError });
+	}
+	if (!actor) {
+		console.warn(`👤 Could not resolve follow author, skipping\n  DID: ${repo}`);
+		return;
+	}
 
 	const rkey = uri.split("/").pop();
 	if (!rkey) throw new Error(`👥 Invalid AT URI in follow create\n  URI: ${uri}`);
@@ -257,37 +438,55 @@ async function handleFollowCreate(
 				},
 			},
 		}),
-	).run(dbClient).catch(() => null);
-	if (!inserted) {
+	).run(dbClient).catch((e) => e instanceof Error ? e : new Error(e?.message ? e : util.inspect(e)));
+	if (inserted instanceof Error) {
 		throw new Error(
 			`👥 Failed to insert follow record\n  Follow URI: ${uri}\n  Subject DID: ${record.subject}`,
+			{ cause: inserted },
 		);
 	}
 }
 
 async function handleActorCreate({ repo }: { repo: string }) {
 	// We can't insert the user directly based on the firehose record because it's missing `handle`
-	const inserted = await resolveUser(repo);
+	const [inserted, insertionError] = await resolveUser(repo);
+	if (insertionError) {
+		throw new Error(`👤 Failed to insert new actor record\n  DID: ${repo}`, { cause: insertionError });
+	}
 	if (!inserted) {
-		throw new Error(`👤 Failed to insert new actor record\n  DID: ${repo}`);
+		console.warn(`👤 Could not insert new actor record\n  DID: ${repo}`);
 	}
 }
 
 async function handleRepostCreate(
 	{ record, repo, uri }: Omit<HandleCreateParams<AppBskyFeedRepost.Record>, "cid">,
 ) {
-	const subjectPost = await resolvePost(record.subject.uri);
-	if (!subjectPost) {
+	const [subjectPost, subjectPostError] = await resolvePost(record.subject.uri);
+	if (subjectPostError) {
 		throw new Error(
 			`🔁 Failed to resolve repost subject post\n  Repost URI: ${uri}\n  Post URI: ${record.subject.uri}`,
+			{ cause: subjectPostError },
 		);
 	}
+	if (!subjectPost) {
+		console.warn(
+			`🔁 Could not resolve repost subject post, skipping\n  Repost URI: ${uri}\n  Post URI: ${record.subject.uri}`,
+		);
+		return;
+	}
 
-	const reposter = await resolveUser(repo);
-	if (!reposter) {
+	const [reposter, reposterError] = await resolveUser(repo);
+	if (reposterError) {
 		throw new Error(
 			`🔁 Failed to resolve repost author\n  Repost URI: ${uri}\n  Post URI: ${record.subject.uri}`,
+			{ cause: reposterError },
 		);
+	}
+	if (!reposter) {
+		console.warn(
+			`🔁 Could not resolve repost author, skipping\n  Repost URI: ${uri}\n  Post URI: ${record.subject.uri}`,
+		);
+		return;
 	}
 
 	const rkey = uri.split("/").pop();
@@ -303,18 +502,23 @@ async function handleRepostCreate(
 				},
 			},
 		}),
-	).run(dbClient).catch(() => null);
-	if (!inserted) {
+	).run(dbClient).catch((e) => e instanceof Error ? e : new Error(e?.message ? e : util.inspect(e)));
+	if (!inserted || inserted instanceof Error) {
 		throw new Error(
 			`🔁 Failed to insert repost record\n  Repost URI: ${uri}\n  Post URI: ${record.subject.uri}`,
+			{ cause: inserted instanceof Error ? inserted : undefined },
 		);
 	}
 }
 
 async function handleActorUpdate({ record, repo }: { record: AppBskyActorProfile.Record; repo: string }) {
-	const actor = await resolveUser(repo);
+	const [actor, actorError] = await resolveUser(repo);
+	if (actorError) {
+		throw new Error(`👤 Failed to resolve actor to update\n  DID: ${repo}`, { cause: actorError });
+	}
 	if (!actor) {
-		throw new Error(`👤 Failed to resolve actor to update\n  DID: ${repo}`);
+		console.warn(`👤 Could not resolve actor to update, skipping\n  DID: ${repo}`);
+		return;
 	}
 
 	const updated = await e.params(
@@ -330,25 +534,33 @@ async function handleActorUpdate({ record, repo }: { record: AppBskyActorProfile
 					},
 				}),
 			),
-	).run(dbClient, { displayName: record.displayName ?? null, bio: record.description ?? null }).catch(() =>
-		null
+	).run(dbClient, { displayName: record.displayName ?? null, bio: record.description ?? null }).catch((e) =>
+		e instanceof Error ? e : new Error(e?.message ? e : util.inspect(e))
 	);
-	if (!updated) {
-		throw new Error(`👤 Failed to update actor record\n  DID: ${repo}`);
+	if (!updated || updated instanceof Error) {
+		throw new Error(`👤 Failed to update actor record\n  DID: ${repo}`, {
+			cause: updated instanceof Error ? updated : undefined,
+		});
 	}
 }
 
 async function handleHandleUpdate({ repo, handle }: { repo: string; handle: string }) {
-	const actor = await resolveUser(repo);
+	const [actor, actorError] = await resolveUser(repo);
+	if (actorError) {
+		throw new Error(`👤 Failed to resolve actor to update\n  DID: ${repo}`, { cause: actorError });
+	}
 	if (!actor) {
-		throw new Error(`👤 Failed to resolve actor to update\n  DID: ${repo}`);
+		console.warn(`👤 Could not resolve actor to update, skipping\n  DID: ${repo}`);
+		return;
 	}
 
 	const updated = await e.update(e.User, () => ({ filter_single: { did: repo }, set: { handle } })).run(
 		dbClient,
-	).catch(() => null);
-	if (!updated) {
-		throw new Error(`👤 Failed to update actor record\n  DID: ${repo}`);
+	).catch((e) => e instanceof Error ? e : new Error(e?.message ? e : util.inspect(e)));
+	if (!updated || updated instanceof Error) {
+		throw new Error(`👤 Failed to update actor record\n  DID: ${repo}`, {
+			cause: updated instanceof Error ? updated : undefined,
+		});
 	}
 }
 
@@ -356,7 +568,7 @@ async function handlePostDelete({ uri }: { uri: string }) {
 	try {
 		await e.delete(e.Post, () => ({ filter_single: { uri } })).run(dbClient);
 	} catch (e) {
-		throw new Error(`📜 Failed to delete post record\n  URI: ${uri}\n  Error: ${e}`);
+		throw new Error(`📜 Failed to delete post record\n  URI: ${uri}`, { cause: e });
 	} finally {
 		await postUriCache.delete(uri);
 	}
@@ -376,9 +588,9 @@ async function handleLikeDelete({ repo, rkey }: HandleDeleteParams) {
 			}),
 		).run(dbClient);
 	} catch (e) {
-		throw new Error(
-			`👍 Failed to delete like record\n  URI: at://${repo}/app.bsky.feed.like/${rkey}\n  Error: ${e}`,
-		);
+		throw new Error(`👍 Failed to delete like record\n  URI: at://${repo}/app.bsky.feed.like/${rkey}`, {
+			cause: e,
+		});
 	}
 }
 
@@ -397,7 +609,8 @@ async function handleFollowDelete({ repo, rkey }: HandleDeleteParams) {
 		).run(dbClient);
 	} catch (e) {
 		throw new Error(
-			`👥 Failed to delete follow record\n  URI: at://${repo}/app.bsky.graph.follow/${rkey}\n  Error: ${e}`,
+			`👥 Failed to delete follow record\n  URI: at://${repo}/app.bsky.graph.follow/${rkey}`,
+			{ cause: e },
 		);
 	}
 }
@@ -417,7 +630,8 @@ async function handleRepostDelete({ repo, rkey }: HandleDeleteParams) {
 		).run(dbClient);
 	} catch (e) {
 		throw new Error(
-			`🔁 Failed to delete repost record\n  URI: at://${repo}/app.bsky.feed.repost/${rkey}\n  Error: ${e}`,
+			`🔁 Failed to delete repost record\n  URI: at://${repo}/app.bsky.feed.repost/${rkey}`,
+			{ cause: e },
 		);
 	}
 }
@@ -426,7 +640,7 @@ async function handleActorDelete({ repo }: { repo: string }) {
 	try {
 		await e.delete(e.User, () => ({ filter_single: { did: repo } })).run(dbClient);
 	} catch (e) {
-		throw new Error(`👤 Failed to delete actor record\n  DID: ${repo}\n  Error: ${e}`);
+		throw new Error(`👤 Failed to delete actor record\n  DID: ${repo}`, { cause: e });
 	} finally {
 		await userDidCache.delete(repo);
 	}
@@ -466,7 +680,7 @@ async function handleMessage(data: RawData) {
 				const record = cborToLexRecord(rec);
 
 				if (AppBskyFeedPost.isRecord(record)) {
-					await insertPostRecord({ record, cid: op.cid.toString(), repo: message.repo, uri });
+					await handlePostCreate({ record, cid: op.cid.toString(), repo: message.repo, uri });
 				} else if (AppBskyFeedRepost.isRecord(record)) {
 					await handleRepostCreate({ record, repo: message.repo, uri });
 				} else if (AppBskyFeedLike.isRecord(record)) {
@@ -510,12 +724,13 @@ async function main() {
 		`wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos${cursor ? `?cursor=${cursor}` : ""}`,
 	);
 	socket.on("open", () => {
-		setInterval(() => {
-			cursorPersist.set("cursor", cursor);
-		}, 30 * 1000);
 	});
 	socket.on("message", async (data) => {
-		handleMessage(data).catch(console.error);
+		handleMessage(data).catch((e) => {
+			console.error(e);
+			process.exit();
+		});
+		cursorPersist.set("cursor", cursor).catch(() => console.error("Failed to persist cursor"));
 	});
 	socket.on("error", (e) => console.error("Websocket error:", e));
 }
