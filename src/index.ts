@@ -735,7 +735,6 @@ async function main() {
 	socket.on("message", async (data) => {
 		handleMessage(data).catch((e) => {
 			console.error(e);
-			process.exit();
 		});
 		cursorPersist.set("cursor", cursor).catch(() => console.error("Failed to persist cursor"));
 	});
