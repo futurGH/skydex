@@ -19,7 +19,7 @@ import * as AppBskyGraphFollow from "../lexicons/types/app/bsky/graph/follow.ts"
 import * as ComAtprotoLabelDefs from "../lexicons/types/com/atproto/label/defs.ts";
 import * as ComAtprotoSyncSubscribeRepos from "../lexicons/types/com/atproto/sync/subscribeRepos.ts";
 import { cursorPersist, postUriCache, userDidCache } from "./cache.ts";
-import { filterTruthy, PostProps, Result, UserProps } from "./util.ts";
+import { filterTruthy, normalize, PostProps, Result, UserProps } from "./util.ts";
 
 type HandleCreateParams<T> = { record: T; cid: string; repo: string; uri: string };
 type HandleDeleteParams = { repo: string; rkey: string };
@@ -135,9 +135,9 @@ async function resolveUser(did: string): Promise<Result<string>> {
 	// null           -> conflict on did but failed to select conflicting object
 	const inserted: { id: string } | UserProps | Error | null = await e.insert(e.User, {
 		did,
-		displayName,
-		handle,
-		bio,
+		displayName: normalize(displayName),
+		handle: normalize(handle),
+		bio: normalize(bio),
 		followers: e.cast(e.User, e.set()),
 	}).unlessConflict((user) => ({ on: user.handle, else: user })).run(dbClient).catch((err) => {
 		// EdgeDB only allows `unlessConflict` on any one property
@@ -181,7 +181,7 @@ async function resolveUser(did: string): Promise<Result<string>> {
 			e.User,
 			() => ({
 				filter_single: { did: previousHandleOwnerDid },
-				set: { handle: previousHandleOwner.data.handle },
+				set: { handle: normalize(previousHandleOwner.data.handle) },
 			}),
 		).run(dbClient).catch((e) => new Error(e));
 		if (!updatedPreviousOwner || updatedPreviousOwner instanceof Error) {
@@ -190,21 +190,22 @@ async function resolveUser(did: string): Promise<Result<string>> {
 
 		const newHandleOwner = await e.insert(e.User, {
 			did,
-			displayName,
-			handle,
-			bio,
+			displayName: normalize(displayName),
+			handle: normalize(handle),
+			bio: normalize(bio),
 			followers: e.cast(e.User, e.set()),
-		}).unlessConflict((user) => ({ on: user.did, else: e.update(user, () => ({ set: { handle } })) }))
-			.run(dbClient).catch((err) => {
-				// See comments on const inserted = ... .catch(err => { ... })
-				if (
-					!(err instanceof EdgeDBError)
-					|| !err.message.includes("did violates exclusivity constraint")
-				) {
-					throw err;
-				}
-				return e.select(e.User, () => ({ filter_single: { did } })).run(dbClient);
-			}).catch((e) => e instanceof Error ? e : new Error(e?.message ? e.message : util.inspect(e)));
+		}).unlessConflict((user) => ({
+			on: user.did,
+			else: e.update(user, () => ({ set: { handle: normalize(handle) } })),
+		})).run(dbClient).catch((err) => {
+			// See comments on const inserted = ... .catch(err => { ... })
+			if (
+				!(err instanceof EdgeDBError) || !err.message.includes("did violates exclusivity constraint")
+			) {
+				throw err;
+			}
+			return e.select(e.User, () => ({ filter_single: { did } })).run(dbClient);
+		}).catch((e) => e instanceof Error ? e : new Error(e?.message ? e.message : util.inspect(e)));
 		if (!newHandleOwner || newHandleOwner instanceof Error) return [null, newHandleOwner];
 	}
 
@@ -306,9 +307,13 @@ async function insertPostRecord(
 			createdAt: e.datetime(new Date(record.createdAt)),
 
 			author: e.select(e.User, () => ({ filter_single: { did: repo } })),
-			text: record.text,
+			text: normalize(record.text),
 			embed: embed
-				? e.json({ title: embed?.title, description: embed?.description, uri: embed?.uri })
+				? e.json({
+					title: embed?.title ? normalize(embed.title) : undefined,
+					description: embed?.description ? normalize(embed.description) : undefined,
+					uri: embed?.uri ? normalize(embed.uri) : undefined,
+				})
 				: undefined,
 			altText,
 
@@ -319,9 +324,9 @@ async function insertPostRecord(
 			likes: e.cast(e.User, e.set()),
 			reposts: e.cast(e.User, e.set()),
 
-			langs: record.langs,
-			tags: record.tags,
-			labels,
+			langs: record.langs?.map(normalize),
+			tags: record.tags?.map(normalize),
+			labels: labels.map(normalize),
 		}).unlessConflict((post) => ({ on: post.uri, else: post })),
 		(post) => post["*"],
 	).run(dbClient).catch((e) => {
@@ -534,9 +539,10 @@ async function handleActorUpdate({ record, repo }: { record: AppBskyActorProfile
 					},
 				}),
 			),
-	).run(dbClient, { displayName: record.displayName ?? null, bio: record.description ?? null }).catch((e) =>
-		e instanceof Error ? e : new Error(e?.message ? e : util.inspect(e))
-	);
+	).run(dbClient, {
+		displayName: record.displayName ? normalize(record.displayName) : null,
+		bio: record.description ? normalize(record.description) : null,
+	}).catch((e) => e instanceof Error ? e : new Error(e?.message ? e : util.inspect(e)));
 	if (!updated || updated instanceof Error) {
 		throw new Error(`👤 Failed to update actor record\n  DID: ${repo}`, {
 			cause: updated instanceof Error ? updated : undefined,
@@ -554,9 +560,10 @@ async function handleHandleUpdate({ repo, handle }: { repo: string; handle: stri
 		return;
 	}
 
-	const updated = await e.update(e.User, () => ({ filter_single: { did: repo }, set: { handle } })).run(
-		dbClient,
-	).catch((e) => e instanceof Error ? e : new Error(e?.message ? e : util.inspect(e)));
+	const updated = await e.update(
+		e.User,
+		() => ({ filter_single: { did: repo }, set: { handle: normalize(handle) } }),
+	).run(dbClient).catch((e) => e instanceof Error ? e : new Error(e?.message ? e : util.inspect(e)));
 	if (!updated || updated instanceof Error) {
 		throw new Error(`👤 Failed to update actor record\n  DID: ${repo}`, {
 			cause: updated instanceof Error ? updated : undefined,
