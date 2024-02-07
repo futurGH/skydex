@@ -5665,7 +5665,7 @@ export const schemaDict = {
       main: {
         type: 'procedure',
         description:
-          'Apply a batch transaction of creates, updates, and deletes.',
+          'Apply a processed transaction of creates, updates, and deletes.',
         input: {
           encoding: 'application/json',
           schema: {
