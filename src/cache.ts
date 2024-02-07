@@ -15,4 +15,3 @@ export const failedMessages = new Keyv({
 	namespace: "failed",
 	store: new KeyvFile({ filename: path.join(__dirname, "..", "_failed_messages.json") }),
 });
-}

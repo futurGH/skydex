@@ -1,7 +1,6 @@
-import { AtpAgent, AtpBaseClient } from "@atproto/api";
+import { AtpBaseClient } from "@atproto/api";
 import { cborToLexRecord, readCar } from "@atproto/repo";
 import { Frame } from "@atproto/xrpc-server";
-import Bottleneck from "bottleneck";
 import { createClient, EdgeDBError } from "edgedb";
 import * as util from "util";
 import { type RawData, WebSocket } from "ws";
@@ -18,6 +17,7 @@ import * as AppBskyFeedRepost from "../lexicons/types/app/bsky/feed/repost.ts";
 import * as AppBskyGraphFollow from "../lexicons/types/app/bsky/graph/follow.ts";
 import * as ComAtprotoLabelDefs from "../lexicons/types/com/atproto/label/defs.ts";
 import * as ComAtprotoSyncSubscribeRepos from "../lexicons/types/com/atproto/sync/subscribeRepos.ts";
+import { getPost, getProfile } from "./api.ts";
 import { cursorPersist, failedMessages, postUriCache, userDidCache } from "./cache.ts";
 import { filterTruthy, normalize, PostProps, Result, UserProps } from "./util.ts";
 
@@ -25,84 +25,11 @@ type HandleCreateParams<T> = { record: T; cid: string; repo: string; uri: string
 type HandleDeleteParams = { repo: string; rkey: string };
 
 const atpClient = new AtpBaseClient();
-const atpAgent = new AtpAgent({ service: "https://api.bsky.app" });
 const dbClient = createClient();
-
-// Rate limit is 3000/5min (10/s); we use slightly conservative numbers to be safe
-const rateLimiter = new Bottleneck({
-	minTime: 110,
-	reservoir: 2800,
-	reservoirRefreshAmount: 2800,
-	reservoirRefreshInterval: 5 * 60 * 1000,
-});
-
-const backoffs = new Map<string, number>();
-rateLimiter.on("failed", (error, jobInfo) => {
-	// retryCount=0 → 250ms
-	// retryCount=1 → 707ms
-	// retryCount=2 → 3 674ms
-	// retryCount=3 → 29 393ms
-	// retryCount=4 → 328 633ms
-	// retryCount>4 → give up
-
-	const statusCode = error?.statusCode ?? error?.status;
-
-	let backoff = backoffs.get(jobInfo.options.id) ?? (backoffs.set(jobInfo.options.id, 250), 250);
-	if (statusCode === 429) {
-		// Wait until rate limit resets if we have 0 requests remaining
-		if (error?.headers?.["ratelimit-remaining"] && error?.headers?.["ratelimit-reset"]) {
-			if (error.headers["ratelimit-remaining"] === "0") {
-				const reset = parseInt(error.headers["ratelimit-reset"]) * 1000;
-				const wait = reset - Date.now();
-				backoffs.set(jobInfo.options.id, wait);
-				return wait;
-			}
-		}
-		if (jobInfo.retryCount < 5) {
-			backoffs.set(jobInfo.options.id, backoff = backoff * (jobInfo.retryCount + 1) ** 1.5);
-			return backoff;
-		} else {
-			backoffs.delete(jobInfo.options.id);
-			console.error(
-				`🚫 Giving up after 5 retries\n  ID: ${jobInfo.options.id}\n  Error: ${util.inspect(error)}`,
-			);
-			return null;
-		}
-	} else {
-		console.error(
-			`❗ Skipping invalid request\n  ID: ${jobInfo.options.id}\n  Error: ${util.inspect(error)}`,
-		);
-		return null;
-	}
-});
-rateLimiter.on("error", (error) => {
-	console.error("🚨 Rate limiter error:", error);
-});
-
-const unresolvedPromises = new Map<string, Promise<unknown>>();
-async function limit<T>(options: Bottleneck.JobOptions, fn: () => Promise<T>): Promise<T> {
-	const id = options.id ?? `unknown::${Date.now()}`;
-	const existing = unresolvedPromises.get(id);
-	if (existing) return existing as Promise<T>;
-
-	const scheduled = rateLimiter.schedule(options, fn).then((res) => {
-		unresolvedPromises.delete(id);
-		return res;
-	});
-	unresolvedPromises.set(id, scheduled);
-	return scheduled;
-}
 
 async function apiGetPost(uri: string): Promise<Result<PostView>> {
 	try {
-		const result = await limit({ id: `app.bsky.feed.getPosts::${uri}` }, async () => {
-			const res = await atpAgent.api.app.bsky.feed.getPosts({ uris: [uri] }).catch((e) => ({
-				success: false,
-				data: e,
-			}));
-			if (!res.success) throw res;
-			return res.data?.posts?.[0];
-		}) ?? null;
+		const result = await getPost(uri) ?? null;
 		return [result, null];
 	} catch (e) {
 		return [null, e];
@@ -119,15 +46,13 @@ async function resolveUser(did: string): Promise<Result<string>> {
 		return [did, null];
 	}
 
-	const profile = await limit(
-		{ id: `app.bsky.actor.getProfile::${did}` },
-		() => atpAgent.api.app.bsky.actor.getProfile({ actor: did }),
-	).catch((e) => e);
-	if (!profile?.success) {
-		if (profile?.message?.includes("Profile not found")) return [null, null];
-		return [null, profile];
-	}
-	const { displayName = profile.data.handle, handle, description: bio = "" } = profile.data;
+	const profile = await getProfile(did).catch((e) =>
+		e instanceof Error ? e : new Error(e?.message ? e.message : util.inspect(e))
+	);
+	if (profile instanceof Error && profile?.message?.includes("Profile not found")) return [null, null];
+	else if (profile instanceof Error || !profile?.did) return [null, profile];
+
+	const { displayName = profile.handle, handle, description: bio = "" } = profile;
 
 	// { id: string } -> inserted or conflict on did
 	// UserProps      -> conflict on handle
@@ -155,18 +80,16 @@ async function resolveUser(did: string): Promise<Result<string>> {
 	// If there's a conflict on handle, we should update both users' handles with fresh data to be safe
 	if ("did" in inserted && typeof inserted.did === "string") {
 		const previousHandleOwnerDid = inserted.did;
-		const previousHandleOwner = await limit({
-			id: `app.bsky.actor.getProfile::${previousHandleOwnerDid}`,
-		}, () => atpAgent.api.app.bsky.actor.getProfile({ actor: previousHandleOwnerDid })).catch(
-			async (err) => {
-				// If the user has been deleted, we can give away the handle, problem solved
-				if (err?.message?.includes("Profile not found")) {
-					await e.delete(e.User, () => ({ filter_single: { did } })).run(dbClient);
-				}
-				// Otherwise, we'll play it safe and do nothing
-				return err instanceof Error ? err : new Error(err?.message ? err.message : util.inspect(err));
-			},
-		);
+		const previousHandleOwner = await getProfile(previousHandleOwnerDid).catch(async (err) => {
+			// If the user has been deleted, we can give away the handle, problem solved
+			if (err?.message?.includes("Profile not found")) {
+				await e.delete(e.User, () => ({ filter_single: { did: previousHandleOwnerDid } })).run(
+					dbClient,
+				);
+			}
+			// Otherwise, we'll play it safe and not update or insert this user
+			return err instanceof Error ? err : new Error(err?.message ? err.message : util.inspect(err));
+		});
 		if (previousHandleOwner instanceof Error || !previousHandleOwner?.success) {
 			return [
 				null,
@@ -181,7 +104,7 @@ async function resolveUser(did: string): Promise<Result<string>> {
 			e.User,
 			() => ({
 				filter_single: { did: previousHandleOwnerDid },
-				set: { handle: normalize(previousHandleOwner.data.handle) },
+				set: { handle: normalize(previousHandleOwner.handle) },
 			}),
 		).run(dbClient).catch((e) => new Error(e));
 		if (!updatedPreviousOwner || updatedPreviousOwner instanceof Error) {
