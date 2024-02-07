@@ -17,7 +17,7 @@ import * as AppBskyFeedRepost from "../lexicons/types/app/bsky/feed/repost.ts";
 import * as AppBskyGraphFollow from "../lexicons/types/app/bsky/graph/follow.ts";
 import * as ComAtprotoLabelDefs from "../lexicons/types/com/atproto/label/defs.ts";
 import * as ComAtprotoSyncSubscribeRepos from "../lexicons/types/com/atproto/sync/subscribeRepos.ts";
-import { getPost, getProfile } from "./api.ts";
+import { BOTTLENECK_OPTIONS, getPost, getProfile, rateLimiter } from "./api.ts";
 import { cursorPersist, failedMessages, postUriCache, userDidCache } from "./cache.ts";
 import { filterTruthy, normalize, PostProps, Result, UserProps } from "./util.ts";
 
@@ -25,7 +25,7 @@ type HandleCreateParams<T> = { record: T; cid: string; repo: string; uri: string
 type HandleDeleteParams = { repo: string; rkey: string };
 
 const atpClient = new AtpBaseClient();
-const dbClient = createClient();
+const dbClient = createClient().withRetryOptions({ attempts: 5 });
 
 async function apiGetPost(uri: string): Promise<Result<PostView>> {
 	try {
@@ -258,6 +258,7 @@ async function insertPostRecord(
 	});
 
 	if (inserted instanceof EdgeDBError) {
+		console.error("edgedb error", inserted);
 		return [null, new Error(`📜 Failed to insert post record\n  URI: ${uri}`, { cause: inserted })];
 	}
 	if (!inserted) return [null, null];
@@ -664,21 +665,45 @@ async function handleMessage(data: RawData) {
 	}
 }
 
+let eventCounter = 0;
+let eventsPerSecond = 0;
+let lastSecond = performance.now();
+
 async function main() {
 	const socket = new WebSocket(
 		`wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos${cursor ? `?cursor=${cursor}` : ""}`,
 	);
+
 	socket.on("open", () => {
+		console.info("🚰 Connected to firehose");
+		setInterval(() => {
+			if (eventsPerSecond >= 350) {
+				rateLimiter.updateSettings({ ...BOTTLENECK_OPTIONS, minTime: 800 });
+			} else if (eventsPerSecond >= 280) {
+				rateLimiter.updateSettings({ ...BOTTLENECK_OPTIONS, minTime: 300 });
+			} else {
+				rateLimiter.updateSettings(BOTTLENECK_OPTIONS);
+			}
+		}, 15_000);
 	});
 	socket.on("message", async (data) => {
 		handleMessage(data).catch((e) => {
 			console.error(e);
 		});
+
 		cursorPersist.set("cursor", cursor).catch(() => console.error("Failed to persist cursor"));
+
+		eventCounter++;
+		if (performance.now() - lastSecond >= 1000) {
+			console.info(`📊 ${eventCounter} events per second`);
+			eventsPerSecond = eventCounter;
+			eventCounter = 0;
+			lastSecond = performance.now();
+		}
 	});
 	socket.on("error", (e) => console.error("Websocket error:", e));
-	socket.on("close", () => {
-		console.error("Websocket closed");
+	socket.on("close", (code, reason) => {
+		console.error(`Websocket closed with code ${code}\nReason: ${reason}`);
 	});
 }
 

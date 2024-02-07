@@ -11,12 +11,13 @@ const atpAgent = new AtpAgent({ service: "https://api.bsky.app" });
 const MAX_BATCH_SIZE = 25;
 
 // Rate limit is 3000/5min (1q/100ms); we use slightly conservative numbers to be safe
-const rateLimiter = new Bottleneck({
+export const BOTTLENECK_OPTIONS: Bottleneck.ConstructorOptions = {
 	minTime: 110,
 	reservoir: 2900,
 	reservoirRefreshAmount: 2900,
 	reservoirRefreshInterval: 5 * 60 * 1000,
-});
+};
+export const rateLimiter = new Bottleneck(BOTTLENECK_OPTIONS);
 
 const backoffs = new Map<string, number>();
 rateLimiter.on("failed", (error, jobInfo) => {
