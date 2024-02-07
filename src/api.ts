@@ -82,7 +82,6 @@ const getProfilesBatch = new Batcher<ProfileViewDetailed>(async function(actors)
 		() => atpAgent.api.app.bsky.actor.getProfiles({ actors }),
 	);
 	if (!result.success) throw result;
-	console.info(`Processed ${result.data.profiles.length}/${actors.length} profiles`);
 	return result.data.profiles.reduce<Record<string, ProfileViewDetailed>>((acc, profile) => {
 		acc[profile.did] = profile;
 		return acc;
@@ -95,7 +94,6 @@ const getPostsBatch = new Batcher<PostView>(async function(uris) {
 		() => atpAgent.api.app.bsky.feed.getPosts({ uris }),
 	);
 	if (!result.success) throw result;
-	console.info(`Processed ${result.data.posts.length}/${uris.length} posts`);
 	return result.data.posts.reduce<Record<string, PostView>>((acc, post) => {
 		acc[post.uri] = post;
 		return acc;

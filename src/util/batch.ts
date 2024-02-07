@@ -38,13 +38,13 @@ export class Batcher<T> {
 			const result = await this.process(queue);
 			for (const id of queue) {
 				this.promises.get(id)?.resolve(result[id]);
-				this.promises.delete(id);
 			}
 		} catch (error) {
 			for (const id of queue) {
 				this.promises.get(id)?.reject(error);
-				this.promises.delete(id);
 			}
+		} finally {
+			this.promises.clear();
 		}
 	}
 }

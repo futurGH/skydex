@@ -677,6 +677,9 @@ async function main() {
 		cursorPersist.set("cursor", cursor).catch(() => console.error("Failed to persist cursor"));
 	});
 	socket.on("error", (e) => console.error("Websocket error:", e));
+	socket.on("close", () => {
+		console.error("Websocket closed");
+	});
 }
 
 main().catch(console.error);
