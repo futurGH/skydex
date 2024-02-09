@@ -64,7 +64,7 @@ rateLimiter.on("error", (error) => {
 
 // Avoid duplicating queries by caching in-progress requests by ID
 const unresolvedPromises = new Map<string, Promise<unknown>>();
-async function limit<T>(options: Bottleneck.JobOptions, fn: () => Promise<T>): Promise<T> {
+export async function limit<T>(options: Bottleneck.JobOptions, fn: () => Promise<T>): Promise<T> {
 	const id = options.id ?? `unknown::${Date.now()}`;
 	const existing = unresolvedPromises.get(id);
 	if (existing) return existing as Promise<T>;

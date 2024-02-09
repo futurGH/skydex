@@ -1,24 +1,24 @@
 {
-  "name": "skydex",
-  "module": "src/index.ts",
-  "type": "module",
-  "private": true,
-  "license": "MPL-2.0",
-  "devDependencies": {
-    "@edgedb/generate": "^0.4.1",
-    "bun-types": "latest",
-    "dprint": "^0.43.2",
-    "multiformats": "^13.0.1",
-    "tsx": "^4.6.2",
-    "typescript": "^5.3.3"
-  },
-  "dependencies": {
-    "@atproto/api": "^0.7.4",
-    "@atproto/repo": "^0.3.6",
-    "@atproto/xrpc-server": "^0.4.2",
-    "bottleneck": "^2.19.5",
-    "edgedb": "^1.4.1",
-    "keyv": "^4.5.4",
-    "keyv-file": "^0.3.0"
-  }
+	"name": "skydex",
+	"module": "src/indexFirehose.ts",
+	"type": "module",
+	"private": true,
+	"license": "MPL-2.0",
+	"devDependencies": {
+		"@edgedb/generate": "^0.4.1",
+		"bun-types": "latest",
+		"dprint": "^0.43.2",
+		"multiformats": "^13.0.1",
+		"tsx": "^4.6.2",
+		"typescript": "^5.3.3"
+	},
+	"dependencies": {
+		"@atproto/api": "^0.7.4",
+		"@atproto/repo": "^0.3.6",
+		"@atproto/xrpc-server": "^0.4.2",
+		"bottleneck": "^2.19.5",
+		"edgedb": "^1.4.1",
+		"keyv": "^4.5.4",
+		"keyv-file": "^0.3.0"
+	}
 }
