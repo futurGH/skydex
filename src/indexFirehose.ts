@@ -2,6 +2,7 @@ import { AtpBaseClient } from "@atproto/api";
 import { cborToLexRecord, readCar } from "@atproto/repo";
 import { Frame } from "@atproto/xrpc-server";
 import * as util from "util";
+import { parseArgs } from "util";
 import { type RawData, WebSocket } from "ws";
 import * as AppBskyActorProfile from "../lexicons/types/app/bsky/actor/profile.ts";
 import * as AppBskyFeedLike from "../lexicons/types/app/bsky/feed/like.ts";
@@ -25,6 +26,11 @@ import {
 	handleRepostCreate,
 	handleRepostDelete,
 } from "./lib/handleRepoOperation.ts";
+
+const { values: args } = parseArgs({
+	args: Bun.argv,
+	options: { verbose: { type: "boolean", default: false } },
+});
 
 const atpClient = new AtpBaseClient();
 
@@ -126,7 +132,7 @@ async function main() {
 	);
 
 	socket.on("open", () => {
-		console.info("🚰 Connected to firehose");
+		if (args.verbose) console.info("🚰 Connected to firehose");
 		setInterval(() => {
 			if (eventsPerSecond >= 350) {
 				rateLimiter.updateSettings({ ...BOTTLENECK_OPTIONS, minTime: 800 });
@@ -144,12 +150,14 @@ async function main() {
 
 		cursorPersist.set("cursor", cursor).catch(() => console.error("Failed to persist cursor"));
 
-		eventCounter++;
-		if (performance.now() - lastSecond >= 1000) {
-			console.info(`📊 ${eventCounter} events per second`);
-			eventsPerSecond = eventCounter;
-			eventCounter = 0;
-			lastSecond = performance.now();
+		if (args.verbose) {
+			eventCounter++;
+			if (performance.now() - lastSecond >= 1000) {
+				console.info(`📊 ${eventCounter} events per second`);
+				eventsPerSecond = eventCounter;
+				eventCounter = 0;
+				lastSecond = performance.now();
+			}
 		}
 	});
 	socket.on("error", (e) => console.error("Websocket error:", e));
