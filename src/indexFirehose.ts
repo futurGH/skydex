@@ -23,7 +23,7 @@ import {
 	handlePostCreate,
 	handlePostDelete,
 	handleRepostCreate,
-	handleRepostDelete
+	handleRepostDelete,
 } from "./handleRepoOperation.ts";
 
 const atpClient = new AtpBaseClient();
