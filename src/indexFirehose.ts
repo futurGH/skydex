@@ -9,8 +9,8 @@ import * as AppBskyFeedPost from "../lexicons/types/app/bsky/feed/post.ts";
 import * as AppBskyFeedRepost from "../lexicons/types/app/bsky/feed/repost.ts";
 import * as AppBskyGraphFollow from "../lexicons/types/app/bsky/graph/follow.ts";
 import * as ComAtprotoSyncSubscribeRepos from "../lexicons/types/com/atproto/sync/subscribeRepos.ts";
-import { BOTTLENECK_OPTIONS, rateLimiter } from "./api.ts";
-import { cursorPersist, failedMessages } from "./cache.ts";
+import { BOTTLENECK_OPTIONS, rateLimiter } from "./lib/api.ts";
+import { cursorPersist, failedMessages } from "./lib/cache.ts";
 import {
 	handleActorCreate,
 	handleActorDelete,
@@ -24,7 +24,7 @@ import {
 	handlePostDelete,
 	handleRepostCreate,
 	handleRepostDelete,
-} from "./handleRepoOperation.ts";
+} from "./lib/handleRepoOperation.ts";
 
 const atpClient = new AtpBaseClient();
 

@@ -1,9 +1,9 @@
 import { AtpAgent } from "@atproto/api";
 import Bottleneck from "bottleneck";
 import util from "util";
-import type { ProfileViewDetailed } from "../lexicons/types/app/bsky/actor/defs.ts";
-import { PostView } from "../lexicons/types/app/bsky/feed/defs.ts";
-import { Batcher } from "./util/batch.ts";
+import type { ProfileViewDetailed } from "../../lexicons/types/app/bsky/actor/defs.ts";
+import { PostView } from "../../lexicons/types/app/bsky/feed/defs.ts";
+import { Batcher } from "../util/batch.ts";
 
 const atpAgent = new AtpAgent({ service: "https://api.bsky.app" });
 

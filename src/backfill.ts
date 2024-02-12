@@ -11,14 +11,14 @@ import * as AppBskyFeedRepost from "../lexicons/types/app/bsky/feed/repost.ts";
 import * as AppBskyGraphBlock from "../lexicons/types/app/bsky/graph/block.ts";
 import * as AppBskyGraphFollow from "../lexicons/types/app/bsky/graph/follow.ts";
 import type { Repo as ListReposRepo } from "../lexicons/types/com/atproto/sync/listRepos.ts";
-import { limit } from "./api.ts";
+import { limit } from "./lib/api.ts";
 import {
 	handleActorCreate,
 	handleFollowCreate,
 	handleLikeCreate,
 	handlePostCreate,
 	handleRepostCreate,
-} from "./handleRepoOperation.ts";
+} from "./lib/handleRepoOperation.ts";
 
 const MEGABYTE = 1024 * 1024;
 

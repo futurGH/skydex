@@ -1,4 +1,4 @@
-import type { helper, Post, User } from "../dbschema/interfaces.ts";
+import type { helper, Post, User } from "../../dbschema/interfaces.ts";
 
 export const filterTruthy = <T>(arr: Array<T>): Array<Exclude<T, false | null | undefined>> =>
 	arr.filter((item): item is Exclude<T, false | null | undefined> => !!item);
