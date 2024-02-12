@@ -28,7 +28,7 @@ import {
 } from "./lib/handleRepoOperation.ts";
 
 const { values: args } = parseArgs({
-	args: Bun.argv,
+	args: process.argv.slice(2),
 	options: { verbose: { type: "boolean", default: false } },
 });
 
@@ -114,7 +114,7 @@ async function handleFirehoseMessage(data: RawData) {
 				}
 			}
 		} catch (e) {
-			await failedMessages.set(`${message.repo}::${message.rev}`, message);
+			await failedMessages.set(`${message.repo}::${message.rev}`, { message, retries: 0 });
 			throw e;
 		}
 
@@ -127,6 +127,24 @@ let eventsPerSecond = 0;
 let lastSecond = performance.now();
 
 async function main() {
+	for (const key of failedMessages.opts.store.keys()) {
+		const { message, retries } = (await failedMessages.get(key)) ?? {};
+		if (!message) continue;
+
+		try {
+			await handleFirehoseMessage(message);
+			await failedMessages.delete(key);
+		} catch (e) {
+			if (retries && retries >= 3) {
+				console.error(`🚫 Giving up on message ${key} after 3 retries`);
+				await failedMessages.delete(key);
+			} else {
+				console.warn(`⚠️ Skipping failed message retry for ${key} due to error:`, e);
+				await failedMessages.set(key, { message, retries: (retries ?? 0) + 1 });
+			}
+		}
+	}
+
 	const socket = new WebSocket(
 		`wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos${cursor ? `?cursor=${cursor}` : ""}`,
 	);
@@ -135,7 +153,7 @@ async function main() {
 		if (args.verbose) console.info("🚰 Connected to firehose");
 		setInterval(() => {
 			if (eventsPerSecond >= 350) {
-				rateLimiter.updateSettings({ ...BOTTLENECK_OPTIONS, minTime: 800 });
+				rateLimiter.updateSettings({ ...BOTTLENECK_OPTIONS, minTime: 750 });
 			} else if (eventsPerSecond >= 280) {
 				rateLimiter.updateSettings({ ...BOTTLENECK_OPTIONS, minTime: 300 });
 			} else {

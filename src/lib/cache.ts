@@ -13,5 +13,5 @@ export const cursorPersist = new Keyv({
 });
 export const failedMessages = new Keyv({
 	namespace: "failed",
-	store: new KeyvFile({ filename: path.join(__dirname, "..", "_failed_messages.json") }),
+	store: new KeyvFile({ filename: path.join(__dirname, "../..", "_failed-messages.json") }),
 });
