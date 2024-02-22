@@ -2,8 +2,8 @@
  * GENERATED CODE - DO NOT MODIFY
  */
 import { ValidationResult, BlobRef } from '@atproto/lexicon'
-import { lexicons } from '../../../../lexicons'
 import { isObj, hasProp } from '../../../../util'
+import { lexicons } from '../../../../lexicons'
 import { CID } from 'multiformats/cid'
 import * as AppBskyActorDefs from '../actor/defs'
 import * as AppBskyEmbedImages from '../embed/images'
@@ -45,6 +45,7 @@ export function validatePostView(v: unknown): ValidationResult {
   return lexicons.validate('app.bsky.feed.defs#postView', v)
 }
 
+/** Metadata about the requesting account's relationship with the subject content. Only has meaningful content for authed requests. */
 export interface ViewerState {
   repost?: string
   like?: string

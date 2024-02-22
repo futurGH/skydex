@@ -2,8 +2,8 @@
  * GENERATED CODE - DO NOT MODIFY
  */
 import { ValidationResult, BlobRef } from '@atproto/lexicon'
-import { lexicons } from '../../../../lexicons'
 import { isObj, hasProp } from '../../../../util'
+import { lexicons } from '../../../../lexicons'
 import { CID } from 'multiformats/cid'
 import * as AppBskyRichtextFacet from '../richtext/facet'
 import * as AppBskyEmbedImages from '../embed/images'
@@ -14,9 +14,11 @@ import * as ComAtprotoLabelDefs from '../../../com/atproto/label/defs'
 import * as ComAtprotoRepoStrongRef from '../../../com/atproto/repo/strongRef'
 
 export interface Record {
+  /** The primary post content. May be an empty string, if there are embeds. */
   text: string
-  /** Deprecated: replaced by app.bsky.richtext.facet. */
+  /** DEPRECATED: replaced by app.bsky.richtext.facet. */
   entities?: Entity[]
+  /** Annotations of text (mentions, URLs, hashtags, etc) */
   facets?: AppBskyRichtextFacet.Main[]
   reply?: ReplyRef
   embed?:
@@ -25,12 +27,14 @@ export interface Record {
     | AppBskyEmbedRecord.Main
     | AppBskyEmbedRecordWithMedia.Main
     | { $type: string; [k: string]: unknown }
+  /** Indicates human language of post primary text content. */
   langs?: string[]
   labels?:
     | ComAtprotoLabelDefs.SelfLabels
     | { $type: string; [k: string]: unknown }
-  /** Additional non-inline tags describing this post. */
+  /** Additional hashtags, in addition to any included in post text and facets. */
   tags?: string[]
+  /** Client-declared timestamp when this post was originally created. */
   createdAt: string
   [k: string]: unknown
 }

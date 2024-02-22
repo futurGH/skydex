@@ -1,12 +1,11 @@
 /**
  * GENERATED CODE - DO NOT MODIFY
  */
-import express from 'express'
+import { Headers, XRPCError } from '@atproto/xrpc'
 import { ValidationResult, BlobRef } from '@atproto/lexicon'
-import { lexicons } from '../../../../lexicons'
 import { isObj, hasProp } from '../../../../util'
+import { lexicons } from '../../../../lexicons'
 import { CID } from 'multiformats/cid'
-import { HandlerAuth } from '@atproto/xrpc-server'
 import * as ComAtprotoAdminDefs from './defs'
 
 export interface QueryParams {
@@ -14,11 +13,28 @@ export interface QueryParams {
   types?: string[]
   createdBy?: string
   /** Sort direction for the events. Defaults to descending order of created at timestamp. */
-  sortDirection: 'asc' | 'desc'
+  sortDirection?: 'asc' | 'desc'
+  /** Retrieve events created after a given timestamp */
+  createdAfter?: string
+  /** Retrieve events created before a given timestamp */
+  createdBefore?: string
   subject?: string
   /** If true, events on all record types (posts, lists, profile etc.) owned by the did are returned */
-  includeAllUserRecords: boolean
-  limit: number
+  includeAllUserRecords?: boolean
+  limit?: number
+  /** If true, only events with comments are returned */
+  hasComment?: boolean
+  /** If specified, only events with comments containing the keyword are returned */
+  comment?: string
+  /** If specified, only events where all of these labels were added are returned */
+  addedLabels?: string[]
+  /** If specified, only events where all of these labels were removed are returned */
+  removedLabels?: string[]
+  /** If specified, only events where all of these tags were added are returned */
+  addedTags?: string[]
+  /** If specified, only events where all of these tags were removed are returned */
+  removedTags?: string[]
+  reportTypes?: string[]
   cursor?: string
 }
 
@@ -30,27 +46,18 @@ export interface OutputSchema {
   [k: string]: unknown
 }
 
-export type HandlerInput = undefined
-
-export interface HandlerSuccess {
-  encoding: 'application/json'
-  body: OutputSchema
-  headers?: { [key: string]: string }
+export interface CallOptions {
+  headers?: Headers
 }
 
-export interface HandlerError {
-  status: number
-  message?: string
+export interface Response {
+  success: boolean
+  headers: Headers
+  data: OutputSchema
 }
 
-export type HandlerOutput = HandlerError | HandlerSuccess
-export type HandlerReqCtx<HA extends HandlerAuth = never> = {
-  auth: HA
-  params: QueryParams
-  input: HandlerInput
-  req: express.Request
-  res: express.Response
+export function toKnownErr(e: any) {
+  if (e instanceof XRPCError) {
+  }
+  return e
 }
-export type Handler<HA extends HandlerAuth = never> = (
-  ctx: HandlerReqCtx<HA>,
-) => Promise<HandlerOutput> | HandlerOutput

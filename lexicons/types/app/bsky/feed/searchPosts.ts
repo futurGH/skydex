@@ -1,18 +1,17 @@
 /**
  * GENERATED CODE - DO NOT MODIFY
  */
-import express from 'express'
+import { Headers, XRPCError } from '@atproto/xrpc'
 import { ValidationResult, BlobRef } from '@atproto/lexicon'
-import { lexicons } from '../../../../lexicons'
 import { isObj, hasProp } from '../../../../util'
+import { lexicons } from '../../../../lexicons'
 import { CID } from 'multiformats/cid'
-import { HandlerAuth } from '@atproto/xrpc-server'
 import * as AppBskyFeedDefs from './defs'
 
 export interface QueryParams {
   /** Search query string; syntax, phrase, boolean, and faceting is unspecified, but Lucene query syntax is recommended. */
   q: string
-  limit: number
+  limit?: number
   /** Optional pagination mechanism; may not necessarily allow scrolling through entire result set. */
   cursor?: string
 }
@@ -27,28 +26,25 @@ export interface OutputSchema {
   [k: string]: unknown
 }
 
-export type HandlerInput = undefined
-
-export interface HandlerSuccess {
-  encoding: 'application/json'
-  body: OutputSchema
-  headers?: { [key: string]: string }
+export interface CallOptions {
+  headers?: Headers
 }
 
-export interface HandlerError {
-  status: number
-  message?: string
-  error?: 'BadQueryString'
+export interface Response {
+  success: boolean
+  headers: Headers
+  data: OutputSchema
 }
 
-export type HandlerOutput = HandlerError | HandlerSuccess
-export type HandlerReqCtx<HA extends HandlerAuth = never> = {
-  auth: HA
-  params: QueryParams
-  input: HandlerInput
-  req: express.Request
-  res: express.Response
+export class BadQueryStringError extends XRPCError {
+  constructor(src: XRPCError) {
+    super(src.status, src.error, src.message, src.headers)
+  }
 }
-export type Handler<HA extends HandlerAuth = never> = (
-  ctx: HandlerReqCtx<HA>,
-) => Promise<HandlerOutput> | HandlerOutput
+
+export function toKnownErr(e: any) {
+  if (e instanceof XRPCError) {
+    if (e.error === 'BadQueryString') return new BadQueryStringError(e)
+  }
+  return e
+}

@@ -2,8 +2,8 @@
  * GENERATED CODE - DO NOT MODIFY
  */
 import { ValidationResult, BlobRef } from '@atproto/lexicon'
-import { lexicons } from '../../../../lexicons'
 import { isObj, hasProp } from '../../../../util'
+import { lexicons } from '../../../../lexicons'
 import { CID } from 'multiformats/cid'
 import * as ComAtprotoRepoStrongRef from '../repo/strongRef'
 import * as ComAtprotoModerationDefs from '../moderation/defs'
@@ -40,6 +40,7 @@ export interface ModEventView {
     | ModEventEscalate
     | ModEventMute
     | ModEventEmail
+    | ModEventResolveAppeal
     | { $type: string; [k: string]: unknown }
   subject:
     | RepoRef
@@ -76,6 +77,8 @@ export interface ModEventViewDetail {
     | ModEventAcknowledge
     | ModEventEscalate
     | ModEventMute
+    | ModEventEmail
+    | ModEventResolveAppeal
     | { $type: string; [k: string]: unknown }
   subject:
     | RepoView
@@ -147,8 +150,13 @@ export interface SubjectStatusView {
   lastReviewedBy?: string
   lastReviewedAt?: string
   lastReportedAt?: string
+  /** Timestamp referencing when the author of the subject appealed a moderation action */
+  lastAppealedAt?: string
   takendown?: boolean
+  /** True indicates that the a previously taken moderator action was appealed against, by the author of the content. False indicates last appeal was resolved by moderators. */
+  appealed?: boolean
   suspendUntil?: string
+  tags?: string[]
   [k: string]: unknown
 }
 
@@ -250,6 +258,7 @@ export interface AccountView {
   did: string
   handle: string
   email?: string
+  relatedRecords?: {}[]
   indexedAt: string
   invitedBy?: ComAtprotoServerDefs.InviteCode
   invites?: ComAtprotoServerDefs.InviteCode[]
@@ -538,6 +547,27 @@ export function validateModEventReverseTakedown(v: unknown): ValidationResult {
   return lexicons.validate('com.atproto.admin.defs#modEventReverseTakedown', v)
 }
 
+/** Resolve appeal on a subject */
+export interface ModEventResolveAppeal {
+  /** Describe resolution. */
+  comment?: string
+  [k: string]: unknown
+}
+
+export function isModEventResolveAppeal(
+  v: unknown,
+): v is ModEventResolveAppeal {
+  return (
+    isObj(v) &&
+    hasProp(v, '$type') &&
+    v.$type === 'com.atproto.admin.defs#modEventResolveAppeal'
+  )
+}
+
+export function validateModEventResolveAppeal(v: unknown): ValidationResult {
+  return lexicons.validate('com.atproto.admin.defs#modEventResolveAppeal', v)
+}
+
 /** Add a comment to a subject */
 export interface ModEventComment {
   comment: string
@@ -674,6 +704,8 @@ export function validateModEventUnmute(v: unknown): ValidationResult {
 export interface ModEventEmail {
   /** The subject line of the email sent to the user. */
   subjectLine: string
+  /** Additional comment about the outgoing comm. */
+  comment?: string
   [k: string]: unknown
 }
 
@@ -687,4 +719,62 @@ export function isModEventEmail(v: unknown): v is ModEventEmail {
 
 export function validateModEventEmail(v: unknown): ValidationResult {
   return lexicons.validate('com.atproto.admin.defs#modEventEmail', v)
+}
+
+/** Add/Remove a tag on a subject */
+export interface ModEventTag {
+  /** Tags to be added to the subject. If already exists, won't be duplicated. */
+  add: string[]
+  /** Tags to be removed to the subject. Ignores a tag If it doesn't exist, won't be duplicated. */
+  remove: string[]
+  /** Additional comment about added/removed tags. */
+  comment?: string
+  [k: string]: unknown
+}
+
+export function isModEventTag(v: unknown): v is ModEventTag {
+  return (
+    isObj(v) &&
+    hasProp(v, '$type') &&
+    v.$type === 'com.atproto.admin.defs#modEventTag'
+  )
+}
+
+export function validateModEventTag(v: unknown): ValidationResult {
+  return lexicons.validate('com.atproto.admin.defs#modEventTag', v)
+}
+
+export interface CommunicationTemplateView {
+  id: string
+  /** Name of the template. */
+  name: string
+  /** Content of the template, can contain markdown and variable placeholders. */
+  subject?: string
+  /** Subject of the message, used in emails. */
+  contentMarkdown: string
+  disabled: boolean
+  /** DID of the user who last updated the template. */
+  lastUpdatedBy: string
+  createdAt: string
+  updatedAt: string
+  [k: string]: unknown
+}
+
+export function isCommunicationTemplateView(
+  v: unknown,
+): v is CommunicationTemplateView {
+  return (
+    isObj(v) &&
+    hasProp(v, '$type') &&
+    v.$type === 'com.atproto.admin.defs#communicationTemplateView'
+  )
+}
+
+export function validateCommunicationTemplateView(
+  v: unknown,
+): ValidationResult {
+  return lexicons.validate(
+    'com.atproto.admin.defs#communicationTemplateView',
+    v,
+  )
 }

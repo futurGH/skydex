@@ -2,8 +2,8 @@
  * GENERATED CODE - DO NOT MODIFY
  */
 import { ValidationResult, BlobRef } from '@atproto/lexicon'
-import { lexicons } from '../../../../lexicons'
 import { isObj, hasProp } from '../../../../util'
+import { lexicons } from '../../../../lexicons'
 import { CID } from 'multiformats/cid'
 import * as ComAtprotoRepoStrongRef from '../../../com/atproto/repo/strongRef'
 import * as AppBskyFeedDefs from '../feed/defs'
@@ -57,6 +57,7 @@ export interface ViewRecord {
   uri: string
   cid: string
   author: AppBskyActorDefs.ProfileViewBasic
+  /** The record data itself. */
   value: {}
   labels?: ComAtprotoLabelDefs.Label[]
   embeds?: (
