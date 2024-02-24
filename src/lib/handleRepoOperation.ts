@@ -436,7 +436,7 @@ export async function handleRepostCreate(
 }
 
 export async function handleActorUpdate(
-	{ record, repo }: { record: AppBskyActorProfile.Record; repo: string },
+	{ record, repo }: { record: Partial<AppBskyActorProfile.Record>; repo: string },
 ) {
 	const [actor, actorError] = await resolveUser(repo);
 	if (actorError) {

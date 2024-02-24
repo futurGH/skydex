@@ -56,6 +56,7 @@ async function handleFirehoseMessage(data: RawData) {
 			await failedMessages.set(`${message.did}::handle`, message);
 			throw e;
 		}
+		cursor = message.seq;
 	} else if (ComAtprotoSyncSubscribeRepos.isTombstone(message)) {
 		try {
 			await handleActorDelete({ repo: message.did });
@@ -63,6 +64,15 @@ async function handleFirehoseMessage(data: RawData) {
 			await failedMessages.set(`${message.did}::tombstone`, message);
 			throw e;
 		}
+		cursor = message.seq;
+	} else if (ComAtprotoSyncSubscribeRepos.isIdentity(message)) {
+		try {
+			await handleActorUpdate({ record: {}, repo: message.did });
+		} catch (e) {
+			await failedMessages.set(`${message.did}::identity`, message);
+			throw e;
+		}
+		cursor = message.seq;
 	} else if (ComAtprotoSyncSubscribeRepos.isInfo(message)) {
 		console.log(`ℹ️ Firehose info ${message.name}: ${message.message}`);
 	} else if (ComAtprotoSyncSubscribeRepos.isCommit(message)) {
